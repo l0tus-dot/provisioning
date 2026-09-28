@@ -8,8 +8,8 @@ Scripts interactifs de configuration d'une machine vierge **Ubuntu** ou **Debian
 
 | Script | Cible |
 |---|---|
-| `ubuntu-setup.sh` | Ubuntu 22.04 / 24.04 LTS |
-| `debian-setup.sh` | Debian 11 (Bullseye) / 12 (Bookworm) |
+| `ubuntu-setup.sh` | Ubuntu 22.04 / 24.04 / 26.04 LTS (et dérivés) |
+| `debian-setup.sh` | Debian 11 (Bullseye) / 12 (Bookworm) / 13 |
 
 ---
 

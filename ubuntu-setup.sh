@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  ubuntu-setup.sh — Script de post-installation Ubuntu
-#  Version : 1.0
-#  Compatibilité : Ubuntu 22.04 LTS / 24.04 LTS (et dérivés)
+#  Version : 1.1
+#  Compatibilité : Ubuntu 22.04 LTS / 24.04 LTS / 26.04 LTS (et dérivés)
 #  Auteur  : Généré avec Network Mapper Suite
 #
 #  Usage :
@@ -107,8 +107,10 @@ print_banner() {
     echo "   \___/|_.__/ \__,_|_| |_|\__|\__,_|____/ \___|\__|\__,_| .__/ "
     echo "                                                            |_|    "
     echo -e "${NC}"
-    echo -e "  ${CYAN}Script de post-installation Ubuntu${NC}  |  v1.0"
-    echo -e "  Système : ${WHITE}$(lsb_release -ds 2>/dev/null || echo Ubuntu)${NC}"
+    echo -e "  ${CYAN}Script de post-installation Ubuntu${NC}  |  v1.1"
+    local os_pretty
+    os_pretty="$(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null || lsb_release -ds 2>/dev/null || echo Ubuntu)"
+    echo -e "  Système : ${WHITE}${os_pretty}${NC}"
     echo -e "  Date    : ${WHITE}$(date '+%d/%m/%Y %H:%M:%S')${NC}"
     hr_bold
     echo ""
@@ -250,14 +252,21 @@ try_flatpak_install() {
     flatpak install -y flathub "$pkg" &>/dev/null && return 0 || return 1
 }
 
-# Installe via pip (Python)
+# Installe via pip / pipx (Python) — compatible PEP 668 (Ubuntu 24.04 / 26.04)
 try_pip_install() {
     local pkg="$1" version="$2"
     local target
     [[ -n "$version" ]] && target="${pkg}==${version}" || target="$pkg"
 
+    # En premier : pipx (méthode officielle isolée recommandée sur Ubuntu 24.04 / 26.04)
+    if command -v pipx &>/dev/null; then
+        pipx install --quiet "$target" &>/dev/null && return 0
+    fi
+
+    # En second : pip3 standard, puis fallback --break-system-packages si PEP 668 actif
     if command -v pip3 &>/dev/null; then
         pip3 install --quiet "$target" &>/dev/null && return 0
+        pip3 install --quiet --break-system-packages "$target" &>/dev/null && return 0
     fi
     return 1
 }

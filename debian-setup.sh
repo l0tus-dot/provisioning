@@ -328,13 +328,19 @@ try_flatpak_install() {
     flatpak install -y flathub "$pkg" &>/dev/null && return 0 || return 1
 }
 
+# Installe via pip / pipx (Python) — compatible PEP 668 (Debian 12 / 13)
 try_pip_install() {
     local pkg="$1" version="$2"
     local target
     [[ -n "$version" ]] && target="${pkg}==${version}" || target="$pkg"
 
+    if command -v pipx &>/dev/null; then
+        pipx install --quiet "$target" &>/dev/null && return 0
+    fi
+
     if command -v pip3 &>/dev/null; then
         pip3 install --quiet "$target" &>/dev/null && return 0
+        pip3 install --quiet --break-system-packages "$target" &>/dev/null && return 0
     fi
     return 1
 }
