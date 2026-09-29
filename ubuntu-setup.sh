@@ -70,11 +70,22 @@ spinner() {
     printf "\r%-60s\r" " "
 }
 
+# Vide le tampon stdin pour absorber les frappes parasites durant les opérations longues
+# (ex : Entrée pressée pendant apt upgrade → ne doit pas déclencher la prochaine question)
+drain_stdin() {
+    local _junk
+    # Lit et jette tout ce qui est déjà dans le tampon, sans bloquer
+    while IFS= read -r -t 0.05 _junk < /dev/tty 2>/dev/null; do :; done
+    return 0
+}
+
 # Lecture sécurisée avec valeur par défaut
 read_default() {
     local prompt="$1" default="$2" var_name="$3"
+    drain_stdin
     ask "$prompt ${GRAY}[défaut: $default]${NC} : "
-    read -r input
+    local input
+    IFS= read -r input < /dev/tty
     if [[ -z "$input" ]]; then
         printf -v "$var_name" '%s' "$default"
     else
@@ -85,10 +96,11 @@ read_default() {
 # Confirmation oui/non
 confirm() {
     local prompt="$1" default="${2:-n}"
-    local yn_hint
+    local yn_hint reply
     [[ "$default" == "y" ]] && yn_hint="${LGREEN}O${NC}/n" || yn_hint="o/${LGREEN}N${NC}"
+    drain_stdin
     ask "$prompt [$yn_hint] : "
-    read -r reply
+    IFS= read -r reply < /dev/tty
     [[ -z "$reply" ]] && reply="$default"
     [[ "$reply" =~ ^[oOyY]$ ]]
 }
@@ -168,13 +180,15 @@ system_update() {
     ok "Liste des paquets mise à jour"
 
     info "Mise à niveau des paquets installés..."
-    (apt upgrade -y -qq 2>&1) &
+    (DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq 2>&1) &
     spinner $! "Mise à niveau en cours..."
+    drain_stdin
     ok "Paquets mis à niveau"
 
     info "Nettoyage des paquets obsolètes..."
-    apt autoremove -y -qq
-    apt autoclean -qq
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq
+    apt-get autoclean -qq
+    drain_stdin
     ok "Nettoyage terminé"
     echo ""
 }
@@ -182,6 +196,20 @@ system_update() {
 # ---------------------------------------------------------------------------
 # 3. Installation d'outils — moteur de recherche et d'installation
 # ---------------------------------------------------------------------------
+
+# Résolution intelligente des alias de paquets (ex: node -> nodejs sous Debian/Ubuntu)
+resolve_package_alias() {
+    local pkg="$1"
+    case "${pkg,,}" in
+        node)           echo "nodejs" ;;
+        golang)         echo "golang-go" ;;
+        pip)            echo "python3-pip" ;;
+        docker)         echo "docker.io" ;;
+        postgres)       echo "postgresql" ;;
+        fd)             echo "fd-find" ;;
+        *)              echo "$pkg" ;;
+    esac
+}
 
 # Recherche un paquet dans apt et retourne les versions disponibles
 search_apt_versions() {
@@ -193,30 +221,39 @@ search_apt_versions() {
 try_apt_install() {
     local pkg="$1" version="$2"
     local install_target
+    local apt_pkg
+    apt_pkg="$(resolve_package_alias "$pkg")"
 
-    if ! apt-cache show "$pkg" &>/dev/null; then
+    if ! apt-cache show "$apt_pkg" &>/dev/null 2>&1; then
         return 1   # Paquet inconnu de apt
     fi
 
     if [[ -n "$version" ]]; then
         # Vérifier si la version existe
-        if apt-cache show "${pkg}=${version}" &>/dev/null 2>&1; then
-            install_target="${pkg}=${version}"
+        if apt-cache show "${apt_pkg}=${version}" &>/dev/null 2>&1; then
+            install_target="${apt_pkg}=${version}"
         else
-            warn "Version '${version}' introuvable dans apt pour '${pkg}'."
+            warn "Version '${version}' introuvable dans apt pour '${apt_pkg}'."
             echo -e "  Versions disponibles :"
-            search_apt_versions "$pkg" | while read -r v; do
+            search_apt_versions "$apt_pkg" | while read -r v; do
                 echo -e "    ${GRAY}→ $v${NC}"
             done
             confirm "  Installer la dernière version disponible à la place ?" "y" || return 1
-            install_target="$pkg"
+            install_target="$apt_pkg"
         fi
     else
-        install_target="$pkg"
+        install_target="$apt_pkg"
     fi
 
-    apt install -y "$install_target" -qq 2>&1 | grep -v "^$" || true
-    return 0
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y "$install_target" -qq 2>&1 | grep -v "^$"; then
+        # Pour nodejs, installer également npm si absent
+        if [[ "$apt_pkg" == "nodejs" ]] && ! command -v npm &>/dev/null; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y npm -qq 2>/dev/null || true
+        fi
+        return 0
+    else
+        return 1
+    fi
 }
 
 # Installe via snap (avec canal/version optionnel)
@@ -227,16 +264,23 @@ try_snap_install() {
         return 1
     fi
 
-    if ! snap find "$pkg" &>/dev/null 2>&1; then
+    # Dans snap, le paquet Node s'appelle "node"
+    local snap_pkg="$pkg"
+    [[ "$snap_pkg" == "nodejs" ]] && snap_pkg="node"
+
+    if ! snap find "$snap_pkg" &>/dev/null 2>&1; then
         return 1
     fi
 
     if [[ -n "$version" ]]; then
-        # Essayer le canal version/stable, puis latest/stable
-        snap install "$pkg" --channel="${version}/stable" 2>/dev/null || \
-        snap install "$pkg" 2>/dev/null || return 1
+        # Essayer avec canal, avec et sans --classic (requis pour node, code, etc.)
+        snap install "$snap_pkg" --channel="${version}/stable" --classic 2>/dev/null || \
+        snap install "$snap_pkg" --channel="${version}/stable" 2>/dev/null || \
+        snap install "$snap_pkg" --classic 2>/dev/null || \
+        snap install "$snap_pkg" 2>/dev/null || return 1
     else
-        snap install "$pkg" 2>/dev/null || return 1
+        snap install "$snap_pkg" --classic 2>/dev/null || \
+        snap install "$snap_pkg" 2>/dev/null || return 1
     fi
     return 0
 }
@@ -350,15 +394,22 @@ install_tools() {
     local tools_list=()
 
     while true; do
+        drain_stdin
         ask "Nom de l'outil (ou 'fin' pour terminer) : "
-        read -r tool_name
-        tool_name="${tool_name// /}"   # Supprimer les espaces
+        IFS= read -r tool_name < /dev/tty
+        # Nettoyage strict (espaces, retours chariot \r, tabulations)
+        tool_name="$(echo -n "$tool_name" | tr -d '[:space:]')"
 
         [[ -z "$tool_name" || "$tool_name" == "fin" || "$tool_name" == "done" ]] && break
 
         # Demander la version
+        drain_stdin
         ask "Version de ${BOLD}$tool_name${NC} ? ${GRAY}(laisser vide = dernière version)${NC} : "
-        read -r tool_version
+        IFS= read -r tool_version < /dev/tty
+        # Nettoyage strict : supprime espaces, retours chariot \r et préfixes v/V
+        tool_version="$(echo -n "$tool_version" | tr -d '[:space:]')"
+        tool_version="${tool_version#v}"
+        tool_version="${tool_version#V}"
 
         tools_list+=("${tool_name}::${tool_version}")
         ok "Ajouté : $tool_name${tool_version:+ v$tool_version}"
@@ -410,7 +461,8 @@ configure_ufw() {
     echo -e "   ${CYAN}1${NC}. Bloquer tout le trafic entrant, autoriser tout le trafic sortant ${GRAY}(recommandé)${NC}"
     echo -e "   ${CYAN}2${NC}. Personnaliser les politiques manuellement"
     ask "Choix [1/2, défaut: 1] : "
-    read -r ufw_policy
+    drain_stdin
+    IFS= read -r ufw_policy < /dev/tty
     [[ -z "$ufw_policy" ]] && ufw_policy="1"
 
     ufw default deny incoming  &>/dev/null
@@ -423,8 +475,9 @@ configure_ufw() {
 
     # SSH
     if confirm "Autoriser SSH (port 22) ?" "y"; then
+        drain_stdin
         ask "  Port SSH ${GRAY}[défaut: 22]${NC} : "
-        read -r ssh_port
+        IFS= read -r ssh_port < /dev/tty
         [[ -z "$ssh_port" ]] && ssh_port="22"
         ufw allow "$ssh_port/tcp" &>/dev/null
         UFW_RULES_ADDED+=("SSH ($ssh_port/tcp)")
@@ -448,8 +501,9 @@ configure_ufw() {
     echo -e "  ${BOLD}Règles personnalisées :${NC}"
     echo -e "  Ajoutez des ports/protocoles supplémentaires. Tapez ${BOLD}fin${NC} pour terminer."
     while true; do
+        drain_stdin
         ask "Port/règle (ex: 8080/tcp, 5432, fin) : "
-        read -r custom_rule
+        IFS= read -r custom_rule < /dev/tty
         [[ -z "$custom_rule" || "$custom_rule" == "fin" ]] && break
         ufw allow "$custom_rule" &>/dev/null && {
             UFW_RULES_ADDED+=("$custom_rule")
@@ -519,7 +573,8 @@ ask_service_action() {
     echo -e "   ${YELLOW}2${NC}. ${BOLD}Désactiver partiellement${NC} (disable) — ne démarre plus au boot, mais démarrable manuellement"
     echo -e "   ${GREEN}3${NC}. ${BOLD}Laisser tel quel${NC} — aucun changement"
     ask "Choix [1/2/3, défaut: 3] : "
-    read -r choice
+    drain_stdin
+    IFS= read -r choice < /dev/tty
     [[ -z "$choice" ]] && choice="3"
 
     case "$choice" in
@@ -561,7 +616,8 @@ manage_services() {
     echo -e "   ${CYAN}C${NC}. Désactiver ${BOLD}partiellement${NC} tous les services de la liste"
     echo -e "   ${CYAN}D${NC}. ${BOLD}Ignorer${NC} la gestion des services"
     ask "Choix [A/B/C/D, défaut: A] : "
-    read -r global_choice
+    drain_stdin
+    IFS= read -r global_choice < /dev/tty
     [[ -z "$global_choice" ]] && global_choice="A"
 
     case "${global_choice^^}" in
