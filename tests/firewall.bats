@@ -15,7 +15,7 @@ setup() {
   R_UFW_EXTRA=()
   R_WARNINGS=()
   HAS_PARTIAL_FAILURE=0
-  unset SSH_CONNECTION SSH_CLIENT UFW_SKIP_ENABLE
+  unset SSH_CONNECTION SSH_CLIENT SUDO_USER PROC_ROOT UFW_ADDED_FILE UFW_FAIL
   CFG_UFW_ENABLE=yes
   CFG_UFW_SSH_PORT=auto
   CFG_UFW_ALLOW=""
@@ -33,6 +33,7 @@ _stub_ufw() {
   stub ufw "echo \"\$*\" >> \"$CALLS\"
 [ -n \"\${UFW_FAIL:-}\" ] && [ \"\$1 \$2\" = \"\$UFW_FAIL\" ] && exit 1
 [ \"\$1\" = status ] && cat \"\$UFW_STATUS_FILE\"
+[ \"\$1 \$2\" = \"show added\" ] && [ -n \"\${UFW_ADDED_FILE:-}\" ] && cat \"\$UFW_ADDED_FILE\"
 exit 0"
   export UFW_STATUS_FILE CALLS
 }
@@ -143,18 +144,19 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
 
 # --- ufw_apply ---
 
-@test "ssh rule applied before enable, after defaults" {
+@test "order: ssh rule, then defaults, then other rules, then enable" {
   stub sshd 'echo "port 2222"'
   CFG_UFW_SSH_PORT=auto
-  ufw_apply 2222/tcp 80/tcp
-  local allow80 allow22 enable deny
-  deny=$(grep -n '^default deny incoming' "$CALLS" | cut -d: -f1)
+  ufw_apply 80/tcp 2222/tcp
+  local allow80 allow22 enable deny out
   allow22=$(grep -n '^allow 2222/tcp' "$CALLS" | cut -d: -f1)
+  deny=$(grep -n '^default deny incoming' "$CALLS" | cut -d: -f1)
+  out=$(grep -n '^default allow outgoing' "$CALLS" | cut -d: -f1)
   allow80=$(grep -n '^allow 80/tcp' "$CALLS" | cut -d: -f1)
   enable=$(grep -n -- '^--force enable' "$CALLS" | cut -d: -f1)
-  grep -q '^default allow outgoing' "$CALLS"
-  [ "$deny" -lt "$allow22" ]
-  [ "$allow22" -lt "$allow80" ]
+  [ "$allow22" -lt "$deny" ]
+  [ "$deny" -lt "$out" ]
+  [ "$out" -lt "$allow80" ]
   [ "$allow80" -lt "$enable" ]
   [ "${R_UFW_ADDED[*]}" = "2222/tcp 80/tcp" ]
 }
@@ -172,6 +174,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
   [ "$status" -eq 1 ]
   ! grep -q -- '--force enable' "$CALLS"
   ! grep -q '^allow 80/tcp' "$CALLS"
+  ! grep -q '^default' "$CALLS"
 }
 
 @test "non-ssh rule failure: partial failure, still enabled" {
@@ -185,7 +188,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
   _status active
   ufw_apply 22/tcp 80/tcp 9000/tcp
   ! grep -q '^allow 80/tcp' "$CALLS"
-  ! grep -q '^allow 22/tcp' "$CALLS"
+  grep -q '^allow 22/tcp' "$CALLS"
   grep -q '^allow 9000/tcp' "$CALLS"
   [ "${R_UFW_ADDED[*]}" = "9000/tcp" ]
 }
@@ -199,7 +202,8 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
 @test "OpenSSH profile covers 22/tcp" {
   _status openssh
   ufw_apply 22/tcp
-  ! grep -q '^allow' "$CALLS"
+  grep -q '^allow 22/tcp' "$CALLS"
+  [ "${#R_UFW_ADDED[@]}" -eq 0 ]
   grep -q -- '--force enable' "$CALLS"
 }
 
@@ -232,9 +236,9 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
   ! grep -q -e '^allow' -e 'enable' -e '^default' "$CALLS"
 }
 
-@test "UFW_SKIP_ENABLE skips the enable step" {
-  UFW_SKIP_ENABLE=1
-  ufw_apply 22/tcp
+@test "--no-enable skips the enable step and warns when inactive" {
+  ufw_apply --no-enable 22/tcp
+  [ "${#R_WARNINGS[@]}" -gt 0 ]
   grep -q '^allow 22/tcp' "$CALLS"
   ! grep -q -- '--force enable' "$CALLS"
 }
@@ -336,4 +340,147 @@ _script_inputs() {
   _script_inputs $'n' ''
   configure_firewall >/dev/null 2>&1
   [ ! -s "$CALLS" ]
+}
+
+# --- invariants anti-lockout (revue 1) ---
+
+@test "lockout: ipv4 source-limited + v6 open still calls allow 22/tcp before enable" {
+  _status v4-limited
+  ufw_apply 22/tcp
+  [ "$(grep -n '^allow 22/tcp' "$CALLS" | cut -d: -f1)" -lt "$(grep -n -- '--force enable' "$CALLS" | cut -d: -f1)" ]
+  [ "${R_UFW_ADDED[*]}" = "22/tcp" ]
+}
+
+@test "lockout: v6-only rule does not count for ipv4" {
+  _status v6only
+  ufw_apply 22/tcp 80/tcp
+  grep -q '^allow 22/tcp' "$CALLS"
+  grep -q '^allow 80/tcp' "$CALLS"
+}
+
+@test "lockout: non-ssh rule needs an ipv4 open rule to be skipped" {
+  _status v4-limited
+  ufw_apply 22/tcp
+  UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-v6only.txt"
+  : > "$CALLS"
+  ufw_apply 22/tcp 22000/tcp
+  grep -q '^allow 22000/tcp' "$CALLS"
+}
+
+@test "LIMIT rules are present (never converted to allow) and reported as extra" {
+  _status limit
+  stub sshd 'echo "port 22"'
+  ufw_apply 22/tcp 25/tcp 80/tcp
+  ! grep -q '^allow 22/tcp' "$CALLS"
+  ! grep -q '^allow 25/tcp' "$CALLS"
+  grep -q '^allow 80/tcp' "$CALLS"
+  ufw_apply 80/tcp
+  [[ " ${R_UFW_EXTRA[*]} " == *" 22/tcp "* ]]
+  [[ " ${R_UFW_EXTRA[*]} " == *" 25/tcp "* ]]
+}
+
+@test "current rules include LIMIT" {
+  _status limit
+  [ "$(ufw_current_rules)" = $'22/tcp\n25/tcp' ]
+}
+
+@test "inactive: rules read from ufw show added" {
+  _status inactive
+  UFW_ADDED_FILE="$REPO_ROOT/tests/fixtures/ufw-added-inactive.txt"; export UFW_ADDED_FILE
+  [ "$(ufw_current_rules)" = $'22/tcp\n2222/tcp\n3306/tcp\n8000:8100/tcp' ]
+}
+
+@test "inactive: extras reported and present rules skipped from show added" {
+  _status inactive
+  UFW_ADDED_FILE="$REPO_ROOT/tests/fixtures/ufw-added-inactive.txt"; export UFW_ADDED_FILE
+  ufw_apply 22/tcp 8000:8100/tcp
+  ! grep -q '^allow 8000:8100/tcp' "$CALLS"
+  [[ " ${R_UFW_EXTRA[*]} " == *" 3306/tcp "* ]]
+  [[ " ${R_UFW_EXTRA[*]} " == *" 2222/tcp "* ]]
+}
+
+@test "--no-enable on an already active ufw does not warn" {
+  _status active
+  ufw_apply --no-enable 22/tcp
+  [ "${#R_WARNINGS[@]}" -eq 0 ]
+}
+
+# --- détection de session SSH (sudo) ---
+
+# _fake_proc <pid:comm:ppid…> : arbre /proc factice ; le premier élément doit être $$.
+_fake_proc() {
+  PROC_ROOT="$BATS_TEST_TMPDIR/proc"; export PROC_ROOT
+  local e pid comm ppid
+  for e in "$@"; do
+    IFS=: read -r pid comm ppid <<< "$e"
+    mkdir -p "$PROC_ROOT/$pid"
+    printf '%s (%s) S %s 1 1 0\n' "$pid" "$comm" "$ppid" > "$PROC_ROOT/$pid/stat"
+  done
+}
+
+@test "sudo without SSH_CONNECTION: sshd ancestor detected" {
+  export SUDO_USER=bob
+  _fake_proc "$$:bash:500" "500:sudo:400" "400:sshd-session:300" "300:sshd:1"
+  _fw_in_ssh_session
+}
+
+@test "sshd as comm with spaces/parens is parsed" {
+  export SUDO_USER=bob
+  _fake_proc "$$:my (x) sh:500" "500:sshd:1"
+  _fw_in_ssh_session
+}
+
+@test "sudo with no sshd ancestor: not an ssh session" {
+  export SUDO_USER=bob
+  _fake_proc "$$:bash:500" "500:login:1"
+  ! _fw_in_ssh_session
+}
+
+@test "no SUDO_USER: ancestors are not consulted" {
+  _fake_proc "$$:bash:500" "500:sshd:1"
+  ! _fw_in_ssh_session
+}
+
+@test "no /proc: not detected" {
+  export SUDO_USER=bob PROC_ROOT="$BATS_TEST_TMPDIR/nope"
+  ! _fw_in_ssh_session
+}
+
+@test "ancestor walk is capped (cycle)" {
+  export SUDO_USER=bob
+  _fake_proc "$$:bash:500" "500:bash:600" "600:bash:500"
+  ! _fw_in_ssh_session
+}
+
+@test "sudo + sshd ancestor + none: sshd port forced" {
+  export SUDO_USER=bob
+  _fake_proc "$$:bash:500" "500:sshd:1"
+  stub sshd 'echo "port 2222"'
+  ufw_plan none > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = "2222/tcp" ]
+}
+
+@test "connection port (4th field of SSH_CONNECTION) is allowed too" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 2022"
+  stub sshd 'echo "port 22"'
+  ufw_plan auto > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = $'22/tcp\n2022/tcp' ]
+}
+
+@test "connection port deduped with sshd port" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 22"
+  ufw_plan auto > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = "22/tcp" ]
+}
+
+@test "interactive: declining SSH inside an ssh session still adds the sshd port" {
+  MODE=interactive
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 22"
+  stub sshd 'echo "port 2222"'
+  _script_inputs $'y\nn\nn\nn\ny' $'fin'
+  configure_firewall >/dev/null 2>&1
+  [ "$CFG_UFW_SSH_PORT" = none ]
+  grep -q '^allow 2222/tcp' "$CALLS"
+  grep -q '^allow 22/tcp' "$CALLS"
+  [ "${#R_WARNINGS[@]}" -gt 0 ]
 }

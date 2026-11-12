@@ -12,9 +12,38 @@
 # _fw_have <commande> : la commande est-elle disponible ? (redéfinissable dans les tests)
 _fw_have() { command -v "$1" >/dev/null 2>&1; }
 
+# _fw_ancestor_is_sshd : un ancêtre du processus courant est-il sshd / sshd-session ?
+# Parcourt ${PROC_ROOT:-/proc}/<pid>/stat (ppid), 64 niveaux au plus ; sans /proc : non détecté.
+_fw_ancestor_is_sshd() {
+  local root="${PROC_ROOT:-/proc}" pid=$$ n stat comm rest
+  local -a r
+  for ((n = 0; n < 64; n++)); do
+    [[ -r "$root/$pid/stat" ]] || return 1
+    stat="$(cat "$root/$pid/stat" 2>/dev/null)" || return 1
+    comm="${stat#*(}"
+    comm="${comm%)*}"
+    [[ "$comm" == sshd || "$comm" == sshd-session ]] && return 0
+    rest="${stat##*) }"
+    read -r -a r <<< "$rest"
+    pid="${r[1]:-}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)) || return 1
+  done
+  return 1
+}
+
 # _fw_in_ssh_session : vrai si la session courante passe par SSH.
+# sudo (env_reset) retire SSH_CONNECTION : avec SUDO_USER, on cherche sshd parmi les ancêtres.
 _fw_in_ssh_session() {
-  [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" ]]
+  [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" ]] && return 0
+  [[ -n "${SUDO_USER:-}" ]] && _fw_ancestor_is_sshd
+}
+
+# _fw_conn_port : port local de la connexion SSH courante (4e champ de SSH_CONNECTION), si valide.
+_fw_conn_port() {
+  local -a c
+  read -r -a c <<< "${SSH_CONNECTION:-}"
+  if is_port "${c[3]:-}"; then printf '%s\n' "$((10#${c[3]}))"; fi
+  return 0
 }
 
 # _fw_sshd_t_port : premier « port N » de `sshd -T` (nécessite root et les clés d'hôte).
@@ -72,42 +101,121 @@ sshd_port() {
   printf '22\n'
 }
 
-# _fw_status_rules <0|1> : règles ALLOW de `ufw status`, normalisées, sans doublons.
-# Avec 1 : uniquement celles ouvertes à tous (From = Anywhere).
+# _fw_ufw_active : `ufw status` annonce-t-il « Status: active » ?
+_fw_ufw_active() {
+  local first=""
+  _fw_have ufw || return 1
+  IFS= read -r first < <(LC_ALL=C ufw status 2>/dev/null) || true
+  [[ "$first" == "Status: active" ]]
+}
+
+# Les enregistrements ont la forme « <v4|v6> <allow|limit> <règle> <1|0> » (1 = ouverte à tous).
 # Le profil d'application « OpenSSH » compte comme 22/tcp.
-_fw_status_rules() {
-  local open_only="${1:-0}" line to i rest
+_fw_status_records() {
+  local line to i rest fam act open
   local -a f
-  local -A seen=()
-  _fw_have ufw || return 0
   while IFS= read -r line; do
     read -r -a f <<< "$line"
     ((${#f[@]} >= 3)) || continue
     to="${f[0]}"
     i=1
-    [[ "${f[i]}" == "(v6)" ]] && i=$((i + 1))
-    [[ "${f[i]:-}" == "ALLOW" ]] || continue
+    fam=v4
+    if [[ "${f[i]}" == "(v6)" ]]; then fam=v6; i=$((i + 1)); fi
+    case "${f[i]:-}" in
+      ALLOW) act=allow ;;
+      LIMIT) act=limit ;;
+      *) continue ;;
+    esac
     i=$((i + 1))
     case "${f[i]:-}" in
       IN) i=$((i + 1)) ;;
       OUT | FWD) continue ;;
     esac
     rest="${f[*]:i}"
-    if ((open_only)) && [[ "$rest" != Anywhere* ]]; then continue; fi
+    open=0
+    [[ "$rest" == Anywhere* ]] && open=1
     if [[ "$to" == OpenSSH ]]; then
       to="22/tcp"
     elif [[ ! "$to" =~ ^[0-9]+(:[0-9]+)?(/(tcp|udp))?$ ]]; then
       continue
     fi
-    if [[ -z "${seen[$to]:-}" ]]; then
-      seen[$to]=1
-      printf '%s\n' "$to"
-    fi
+    printf '%s %s %s %s\n' "$fam" "$act" "$to" "$open"
   done < <(LC_ALL=C ufw status 2>/dev/null)
 }
 
-# ufw_current_rules : règles ALLOW actuelles, une par ligne (vide si ufw inactif).
-ufw_current_rules() { _fw_status_rules 0; }
+# Pare-feu inactif : règles enregistrées, lues dans `ufw show added`.
+_fw_added_records() {
+  local line i act open src port proto rule
+  local -a f
+  while IFS= read -r line; do
+    read -r -a f <<< "$line"
+    [[ "${f[0]:-}" == ufw ]] || continue
+    case "${f[1]:-}" in
+      allow | limit) act="${f[1]}" ;;
+      *) continue ;;
+    esac
+    i=2
+    [[ "${f[i]:-}" == in ]] && i=$((i + 1))
+    open=1
+    if [[ "${f[i]:-}" == from ]]; then
+      src="${f[i + 1]:-}"
+      case "${src,,}" in any | anywhere | 0.0.0.0/0) ;; *) open=0 ;; esac
+      port="" proto=""
+      for ((i = i + 2; i < ${#f[@]}; i++)); do
+        [[ "${f[i]}" == port ]] && port="${f[i + 1]:-}"
+        [[ "${f[i]}" == proto ]] && proto="${f[i + 1]:-}"
+      done
+      rule="$port${proto:+/$proto}"
+    else
+      rule="${f[i]:-}"
+      [[ "$rule" == OpenSSH ]] && rule="22/tcp"
+    fi
+    [[ "$rule" =~ ^[0-9]+(:[0-9]+)?(/(tcp|udp))?$ ]] || continue
+    printf 'v4 %s %s %s\n' "$act" "$rule" "$open"
+  done < <(LC_ALL=C ufw show added 2>/dev/null)
+}
+
+_fw_records() {
+  _fw_have ufw || return 0
+  if _fw_ufw_active; then _fw_status_records; else _fw_added_records; fi
+}
+
+# ufw_current_rules : règles ALLOW/LIMIT actuelles (ufw inactif : règles enregistrées), une par ligne.
+ufw_current_rules() {
+  local fam act rule open
+  local -A seen=()
+  while read -r fam act rule open; do
+    [[ -z "$rule" || -n "${seen[$rule]:-}" ]] && continue
+    seen[$rule]=1
+    printf '%s\n' "$rule"
+  done < <(_fw_records)
+}
+
+# _fw_find <tableau d'enregistrements> <règle> : affiche « limit » ou « allow » si une règle
+# IPv4 ouverte à tous couvre <règle> (rien sinon). Une règle IPv6 ou limitée à une source
+# ne compte jamais.
+_fw_find() {
+  local -n _fw_r="$1"
+  local want="$2" rec fam act rule open found=""
+  for rec in "${_fw_r[@]}"; do
+    read -r fam act rule open <<< "$rec"
+    [[ "$fam" == v4 && "$open" == 1 ]] || continue
+    _fw_covers "$rule" "$want" || continue
+    if [[ "$act" == limit ]]; then printf 'limit\n'; return 0; fi
+    found=allow
+  done
+  if [[ -n "$found" ]]; then printf '%s\n' "$found"; fi
+  return 0
+}
+
+# _fw_ssh_ports : ports SSH à ne jamais couper (sshd, port configuré, connexion courante).
+_fw_ssh_ports() {
+  sshd_port
+  if [[ "${CFG_UFW_SSH_PORT:-}" =~ ^[0-9]+$ ]] && is_port "$CFG_UFW_SSH_PORT"; then
+    printf '%s\n' "$((10#$CFG_UFW_SSH_PORT))"
+  fi
+  _fw_conn_port
+}
 
 # _fw_covers <règle actuelle> <règle voulue> : la première couvre-t-elle la seconde ?
 # « 80 » (tcp+udp) couvre « 80/tcp ».
@@ -149,6 +257,9 @@ ufw_plan() {
       ;;
   esac
 
+  r="$(_fw_conn_port)"
+  if [[ -n "$r" ]]; then out+=("$r/tcp"); fi
+
   for r in "$@"; do
     if ! is_ufw_rule "$r"; then
       warn "Règle UFW invalide ignorée : $r" >&2
@@ -165,13 +276,16 @@ ufw_plan() {
   done
 }
 
-# ufw_apply <règles…> : installe ufw si besoin, politique par défaut, règles manquantes, activation.
-# Si l'ajout d'une règle SSH échoue, UFW n'est PAS activé (retour 1).
-# UFW_SKIP_ENABLE=1 : pose les règles sans activer.
+# ufw_apply [--no-enable] <règles…> : installe ufw si besoin, règles SSH, politique par défaut,
+# autres règles manquantes, activation (sauf --no-enable).
+# Ordre : SSH d'abord, avant tout changement de politique. Une règle SSH est toujours
+# soumise à `ufw allow` (idempotent), sauf si une règle LIMIT IPv4 ouverte la couvre déjà.
+# Si l'ajout d'une règle SSH échoue : rien d'autre n'est modifié, UFW n'est PAS activé (retour 1).
 ufw_apply() {
-  local r c have sshr real
-  local -a ssh_rules=() other_rules=() current=() wanted=("$@")
-  local -A is_ssh=()
+  local enable=1 r c p kind fam act rule open
+  if [[ "${1:-}" == "--no-enable" ]]; then enable=0; shift; fi
+  local -a ssh_rules=() other_rules=() recs=() wanted=("$@")
+  local -A is_ssh=() seen=()
 
   if ! _fw_have ufw; then
     info "UFW non installé : installation…"
@@ -180,6 +294,34 @@ ufw_apply() {
       return 1
     fi
   fi
+
+  while IFS= read -r p; do
+    if [[ -n "$p" ]]; then is_ssh["$p/tcp"]=1; fi
+  done < <(_fw_ssh_ports)
+  for r in "${wanted[@]}"; do
+    if [[ -n "${is_ssh[$r]:-}" ]]; then ssh_rules+=("$r"); else other_rules+=("$r"); fi
+  done
+
+  mapfile -t recs < <(_fw_records)
+
+  for r in "${ssh_rules[@]}"; do
+    kind="$(_fw_find recs "$r")"
+    if [[ "$kind" == limit ]]; then
+      info "Règle UFW déjà présente (limit) : $r"
+      continue
+    fi
+    if run ufw allow "$r"; then
+      if [[ -z "$kind" ]]; then
+        R_UFW_ADDED+=("$r")
+        ok "Règle UFW ajoutée : $r"
+      else
+        info "Règle UFW déjà présente : $r"
+      fi
+    else
+      error "Impossible d'ajouter la règle SSH $r : politique par défaut inchangée et UFW non activé (risque de perdre l'accès)"
+      return 1
+    fi
+  done
 
   if ! run ufw default deny incoming; then
     error "ufw default deny incoming a échoué"
@@ -190,53 +332,39 @@ ufw_apply() {
     return 1
   fi
 
-  # Règles SSH = port détecté et port configuré : posées avant toutes les autres.
-  real="$(sshd_port)"
-  is_ssh["$real/tcp"]=1
-  if [[ "${CFG_UFW_SSH_PORT:-}" =~ ^[0-9]+$ ]] && is_port "$CFG_UFW_SSH_PORT"; then
-    is_ssh["$((10#$CFG_UFW_SSH_PORT))/tcp"]=1
-  fi
-  for r in "${wanted[@]}"; do
-    if [[ -n "${is_ssh[$r]:-}" ]]; then ssh_rules+=("$r"); else other_rules+=("$r"); fi
-  done
-
-  mapfile -t current < <(_fw_status_rules 1)
-
-  for r in "${ssh_rules[@]}" "${other_rules[@]}"; do
-    have=0
-    for c in "${current[@]}"; do
-      if _fw_covers "$c" "$r"; then have=1; break; fi
-    done
-    if ((have)); then
+  for r in "${other_rules[@]}"; do
+    kind="$(_fw_find recs "$r")"
+    if [[ -n "$kind" ]]; then
       info "Règle UFW déjà présente : $r"
       continue
     fi
-    sshr=0
-    [[ -n "${is_ssh[$r]:-}" ]] && sshr=1
     if run ufw allow "$r"; then
       R_UFW_ADDED+=("$r")
       ok "Règle UFW ajoutée : $r"
-    elif ((sshr)); then
-      error "Impossible d'ajouter la règle SSH $r : UFW n'est pas activé (risque de perdre l'accès)"
-      return 1
     else
       warn "Échec de l'ajout de la règle UFW : $r"
       HAS_PARTIAL_FAILURE=1
     fi
   done
 
-  # Règles déjà présentes mais non demandées : signalées, jamais supprimées.
-  mapfile -t current < <(_fw_status_rules 0)
-  for c in "${current[@]}"; do
-    have=0
+  # Règles déjà présentes mais non demandées (allow, limit, toute source) : signalées, jamais supprimées.
+  for c in "${recs[@]}"; do
+    read -r fam act rule open <<< "$c"
+    [[ -n "$rule" && -z "${seen[$rule]:-}" ]] || continue
+    seen[$rule]=1
+    kind=0
     for r in "${wanted[@]}"; do
-      if _fw_covers "$c" "$r"; then have=1; break; fi
+      if _fw_covers "$rule" "$r"; then kind=1; break; fi
     done
-    ((have)) || R_UFW_EXTRA+=("$c")
+    ((kind)) || R_UFW_EXTRA+=("$rule")
   done
 
-  if [[ "${UFW_SKIP_ENABLE:-0}" == "1" ]]; then
-    warn "UFW configuré mais non activé. Activez-le avec : sudo ufw enable"
+  if ((!enable)); then
+    if _fw_ufw_active; then
+      info "UFW déjà actif : activation inchangée"
+    else
+      warn "UFW configuré mais non activé. Activez-le avec : sudo ufw enable"
+    fi
     return 0
   fi
   if ! run ufw --force enable; then
@@ -258,6 +386,7 @@ _fw_ask_port() {
 }
 
 # _fw_ask_interactive : pose les questions et remplit CFG_UFW_ENABLE / CFG_UFW_SSH_PORT / CFG_UFW_ALLOW.
+# Affecte aussi la variable locale `no_enable` de configure_firewall (portée dynamique).
 _fw_ask_interactive() {
   local p r bad=0 count=0
   local -a allow=()
@@ -302,14 +431,14 @@ _fw_ask_interactive() {
   CFG_UFW_ALLOW="${CFG_UFW_ALLOW:+$CFG_UFW_ALLOW }${allow[*]}"
   CFG_UFW_ALLOW="${CFG_UFW_ALLOW% }"
 
-  confirm "Activer UFW maintenant ?" y || UFW_SKIP_ENABLE=1
+  confirm "Activer UFW maintenant ?" y || no_enable=1
   return 0
 }
 
 # configure_firewall : point d'entrée. CFG_UFW_ENABLE=no => ne touche à rien.
 configure_firewall() {
-  local plan_file
-  local -a requested=() plan=()
+  local plan_file no_enable=0
+  local -a requested=() plan=() apply_opts=()
 
   if [[ "${CFG_UFW_ENABLE:-yes}" == "no" ]]; then
     info "Pare-feu : UFW_ENABLE=no, aucune modification"
@@ -330,7 +459,8 @@ configure_firewall() {
   mapfile -t plan < "$plan_file"
   rm -f -- "$plan_file"
 
-  if ! ufw_apply "${plan[@]}"; then
+  if ((no_enable)); then apply_opts=(--no-enable); fi
+  if ! ufw_apply "${apply_opts[@]}" "${plan[@]}"; then
     HAS_PARTIAL_FAILURE=1
     return 1
   fi
