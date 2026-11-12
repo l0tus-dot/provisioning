@@ -298,6 +298,12 @@ ufw_apply() {
   while IFS= read -r p; do
     if [[ -n "$p" ]]; then is_ssh["$p/tcp"]=1; fi
   done < <(_fw_ssh_ports)
+  # Défense en profondeur : en session SSH, les ports SSH sont toujours posés, même non demandés.
+  if _fw_in_ssh_session; then
+    for r in "${!is_ssh[@]}"; do
+      case " ${wanted[*]} " in *" $r "*) ;; *) wanted+=("$r") ;; esac
+    done
+  fi
   for r in "${wanted[@]}"; do
     if [[ -n "${is_ssh[$r]:-}" ]]; then ssh_rules+=("$r"); else other_rules+=("$r"); fi
   done

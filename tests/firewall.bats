@@ -111,7 +111,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
 @test "no guard outside ssh" {
   stub sshd 'echo "port 2222"'
   ufw_plan none 80/tcp > "$BATS_TEST_TMPDIR/plan"
-  ! grep -q '2222' "$BATS_TEST_TMPDIR/plan"
+  if grep -q '2222' "$BATS_TEST_TMPDIR/plan"; then false; fi
   [ "$(cat "$BATS_TEST_TMPDIR/plan")" = "80/tcp" ]
   [ "${#R_WARNINGS[@]}" -eq 0 ]
 }
@@ -172,9 +172,9 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
   export UFW_FAIL="allow 2222/tcp"
   bats_run ufw_apply 2222/tcp 80/tcp
   [ "$status" -eq 1 ]
-  ! grep -q -- '--force enable' "$CALLS"
-  ! grep -q '^allow 80/tcp' "$CALLS"
-  ! grep -q '^default' "$CALLS"
+  if grep -q -- '--force enable' "$CALLS"; then false; fi
+  if grep -q '^allow 80/tcp' "$CALLS"; then false; fi
+  if grep -q '^default' "$CALLS"; then false; fi
 }
 
 @test "non-ssh rule failure: partial failure, still enabled" {
@@ -187,7 +187,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
 @test "existing rule not re-added" {
   _status active
   ufw_apply 22/tcp 80/tcp 9000/tcp
-  ! grep -q '^allow 80/tcp' "$CALLS"
+  if grep -q '^allow 80/tcp' "$CALLS"; then false; fi
   grep -q '^allow 22/tcp' "$CALLS"
   grep -q '^allow 9000/tcp' "$CALLS"
   [ "${R_UFW_ADDED[*]}" = "9000/tcp" ]
@@ -196,7 +196,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
 @test "bare port rule covers port/tcp" {
   _status active
   ufw_apply 443/tcp
-  ! grep -q '^allow 443/tcp' "$CALLS"
+  if grep -q '^allow 443/tcp' "$CALLS"; then false; fi
 }
 
 @test "OpenSSH profile covers 22/tcp" {
@@ -212,7 +212,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
   ufw_apply 22/tcp 80/tcp
   [[ " ${R_UFW_EXTRA[*]} " == *" 3306/tcp "* ]]
   [[ " ${R_UFW_EXTRA[*]} " != *" 22/tcp "* ]]
-  ! grep -q 'delete' "$CALLS"
+  if grep -q 'delete' "$CALLS"; then false; fi
 }
 
 @test "installs ufw via apt when missing" {
@@ -233,14 +233,14 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
 @test "dry-run: no ufw changes" {
   DRY_RUN=1
   ufw_apply 22/tcp
-  ! grep -q -e '^allow' -e 'enable' -e '^default' "$CALLS"
+  if grep -q -e '^allow' -e 'enable' -e '^default' "$CALLS"; then false; fi
 }
 
 @test "--no-enable skips the enable step and warns when inactive" {
   ufw_apply --no-enable 22/tcp
   [ "${#R_WARNINGS[@]}" -gt 0 ]
   grep -q '^allow 22/tcp' "$CALLS"
-  ! grep -q -- '--force enable' "$CALLS"
+  if grep -q -- '--force enable' "$CALLS"; then false; fi
 }
 
 # --- configure_firewall ---
@@ -264,7 +264,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
   export UFW_FAIL="allow 2222/tcp"
   bats_run configure_firewall
   [ "$status" -eq 1 ]
-  ! grep -q -- '--force enable' "$CALLS"
+  if grep -q -- '--force enable' "$CALLS"; then false; fi
 }
 
 @test "configure_firewall: SSH session + none still opens sshd port" {
@@ -324,7 +324,7 @@ _script_inputs() {
   _script_inputs $'y\nn\nn\nn\ny' $'fin'
   configure_firewall >/dev/null 2>&1
   [ "$CFG_UFW_SSH_PORT" = none ]
-  ! grep -q '^allow' "$CALLS"
+  if grep -q '^allow' "$CALLS"; then false; fi
 }
 
 @test "interactive: not activating applies rules without enable" {
@@ -332,7 +332,7 @@ _script_inputs() {
   _script_inputs $'y\ny\nn\nn\nn' $'22\nfin'
   configure_firewall >/dev/null 2>&1
   grep -q '^allow 22/tcp' "$CALLS"
-  ! grep -q -- '--force enable' "$CALLS"
+  if grep -q -- '--force enable' "$CALLS"; then false; fi
 }
 
 @test "interactive: declining configuration touches nothing" {
@@ -371,8 +371,8 @@ _script_inputs() {
   _status limit
   stub sshd 'echo "port 22"'
   ufw_apply 22/tcp 25/tcp 80/tcp
-  ! grep -q '^allow 22/tcp' "$CALLS"
-  ! grep -q '^allow 25/tcp' "$CALLS"
+  if grep -q '^allow 22/tcp' "$CALLS"; then false; fi
+  if grep -q '^allow 25/tcp' "$CALLS"; then false; fi
   grep -q '^allow 80/tcp' "$CALLS"
   ufw_apply 80/tcp
   [[ " ${R_UFW_EXTRA[*]} " == *" 22/tcp "* ]]
@@ -394,7 +394,7 @@ _script_inputs() {
   _status inactive
   UFW_ADDED_FILE="$REPO_ROOT/tests/fixtures/ufw-added-inactive.txt"; export UFW_ADDED_FILE
   ufw_apply 22/tcp 8000:8100/tcp
-  ! grep -q '^allow 8000:8100/tcp' "$CALLS"
+  if grep -q '^allow 8000:8100/tcp' "$CALLS"; then false; fi
   [[ " ${R_UFW_EXTRA[*]} " == *" 3306/tcp "* ]]
   [[ " ${R_UFW_EXTRA[*]} " == *" 2222/tcp "* ]]
 }
@@ -433,23 +433,23 @@ _fake_proc() {
 @test "sudo with no sshd ancestor: not an ssh session" {
   export SUDO_USER=bob
   _fake_proc "$$:bash:500" "500:login:1"
-  ! _fw_in_ssh_session
+  if _fw_in_ssh_session; then false; fi
 }
 
 @test "no SUDO_USER: ancestors are not consulted" {
   _fake_proc "$$:bash:500" "500:sshd:1"
-  ! _fw_in_ssh_session
+  if _fw_in_ssh_session; then false; fi
 }
 
 @test "no /proc: not detected" {
   export SUDO_USER=bob PROC_ROOT="$BATS_TEST_TMPDIR/nope"
-  ! _fw_in_ssh_session
+  if _fw_in_ssh_session; then false; fi
 }
 
 @test "ancestor walk is capped (cycle)" {
   export SUDO_USER=bob
   _fake_proc "$$:bash:500" "500:bash:600" "600:bash:500"
-  ! _fw_in_ssh_session
+  if _fw_in_ssh_session; then false; fi
 }
 
 @test "sudo + sshd ancestor + none: sshd port forced" {
@@ -483,4 +483,23 @@ _fake_proc() {
   grep -q '^allow 2222/tcp' "$CALLS"
   grep -q '^allow 22/tcp' "$CALLS"
   [ "${#R_WARNINGS[@]}" -gt 0 ]
+}
+
+@test "defense in depth: ssh session forces ssh ports even if not requested" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 2022"
+  stub sshd 'echo "port 2222"'
+  ufw_apply 80/tcp
+  grep -q '^allow 2222/tcp' "$CALLS"
+  grep -q '^allow 2022/tcp' "$CALLS"
+  [ "$(grep -n '^allow 2222/tcp' "$CALLS" | cut -d: -f1)" -lt "$(grep -n -- '--force enable' "$CALLS" | cut -d: -f1)" ]
+  [ "$(grep -n '^allow 2022/tcp' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^default deny' "$CALLS" | cut -d: -f1)" ]
+  [[ " ${R_UFW_EXTRA[*]:-} " != *" 2222/tcp "* ]]
+}
+
+@test "defense in depth: ssh failure blocks enable on direct ufw_apply" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 22"
+  export UFW_FAIL="allow 22/tcp"
+  bats_run ufw_apply 80/tcp
+  [ "$status" -eq 1 ]
+  if grep -q -- '--force enable' "$CALLS"; then false; fi
 }
