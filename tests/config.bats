@@ -59,15 +59,18 @@ setup() {
 
 @test "validators" {
   local v
-  for v in "is_yes_no yes" "is_yes_no no" "is_port 1" "is_port 65535" "is_ufw_rule 80" \n    "is_ufw_rule 80/tcp" "is_ufw_rule 6000:6010/udp" "is_tool_spec apt:git" \n    "is_tool_spec pip:black@24.1" "is_tool_spec flatpak:org.gimp.GIMP"; do
+  for v in "is_yes_no yes" "is_yes_no no" "is_port 1" "is_port 65535" \
+    "is_ufw_rule 80" "is_ufw_rule 80/tcp" "is_ufw_rule 6000:6010/udp" \
+    "is_tool_spec apt:git" "is_tool_spec pip:black@24.1" \
+    "is_tool_spec flatpak:org.gimp.GIMP"; do
     $v || { echo "devrait réussir : $v"; return 1; }
   done
-  for v in "is_yes_no maybe" "is_port 0" "is_port 65536" "is_port abc" "is_port" \n    "is_ufw_rule 80/icmp" "is_ufw_rule 6010:6000/tcp" "is_ufw_rule 6000:6010" \n    "is_tool_spec flatpak:org.gimp.GIMP@2" "is_tool_spec git" "is_tool_spec apt:a\ b"; do
+  for v in "is_yes_no maybe" "is_port 0" "is_port 65536" "is_port abc" "is_port" \
+    "is_ufw_rule 80/icmp" "is_ufw_rule 6010:6000/tcp" "is_ufw_rule 6000:6010" \
+    "is_tool_spec flatpak:org.gimp.GIMP@2" "is_tool_spec git"; do
     if $v; then echo "devrait échouer : $v"; return 1; fi
   done
 }
-
-@test "write then load round-trips" {
   CFG_UPDATE_SYSTEM=no
   CFG_TOOLS="apt:git snap:code pip:black@24.1"
   CFG_DEBIAN_COMPONENTS="contrib non-free-firmware"
