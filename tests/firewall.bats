@@ -1,0 +1,339 @@
+#!/usr/bin/env bats
+
+load helpers
+
+setup() {
+  load_lib update
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/lib/config.sh"
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/lib/firewall.sh"
+  MODE=auto
+  DRY_RUN=0
+  LOG_FILE=""
+  R_UFW_ADDED=()
+  R_UFW_EXTRA=()
+  R_WARNINGS=()
+  HAS_PARTIAL_FAILURE=0
+  unset SSH_CONNECTION SSH_CLIENT UFW_SKIP_ENABLE
+  CFG_UFW_ENABLE=yes
+  CFG_UFW_SSH_PORT=auto
+  CFG_UFW_ALLOW=""
+  SSHD_CONFIG="$BATS_TEST_TMPDIR/sshd_config"
+  UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-inactive.txt"
+  CALLS="$BATS_TEST_TMPDIR/ufw.calls"
+  : > "$CALLS"
+  _stub_ufw
+  stub sshd 'exit 1'
+}
+
+# Faux ufw : journalise les appels, `status` imprime $UFW_STATUS_FILE.
+# $UFW_FAIL (motif sur "$1 $2") fait échouer l'appel correspondant.
+_stub_ufw() {
+  stub ufw "echo \"\$*\" >> \"$CALLS\"
+[ -n \"\${UFW_FAIL:-}\" ] && [ \"\$1 \$2\" = \"\$UFW_FAIL\" ] && exit 1
+[ \"\$1\" = status ] && cat \"\$UFW_STATUS_FILE\"
+exit 0"
+  export UFW_STATUS_FILE CALLS
+}
+
+_status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; export UFW_STATUS_FILE; }
+
+# --- sshd_port ---
+
+@test "sshd port from sshd -T" {
+  stub sshd 'printf "port 2222\naddressfamily any\n"'
+  [ "$(sshd_port)" = 2222 ]
+}
+
+@test "sshd port falls back to sshd_config, ignoring comments and case" {
+  printf '#Port 22\n  # Port 99\nPORT 2200\n' > "$SSHD_CONFIG"
+  [ "$(sshd_port)" = 2200 ]
+}
+
+@test "sshd port reads Include'd conf files" {
+  mkdir -p "$BATS_TEST_TMPDIR/sshd_config.d"
+  printf 'Include %s/sshd_config.d/*.conf\n#Port 22\n' "$BATS_TEST_TMPDIR" > "$SSHD_CONFIG"
+  printf 'Port 2345\n' > "$BATS_TEST_TMPDIR/sshd_config.d/10-port.conf"
+  [ "$(sshd_port)" = 2345 ]
+}
+
+@test "sshd port defaults to 22" {
+  [ "$(sshd_port)" = 22 ]
+}
+
+@test "sshd port rejects invalid values" {
+  stub sshd 'echo "port 99999"'
+  printf 'Port abc\n' > "$SSHD_CONFIG"
+  [ "$(sshd_port)" = 22 ]
+}
+
+# --- ufw_current_rules ---
+
+@test "current rules empty when ufw inactive" {
+  _status inactive
+  [ -z "$(ufw_current_rules)" ]
+}
+
+@test "current rules parsed, v6 deduped, ranges kept" {
+  _status active
+  bats_run ufw_current_rules
+  [ "$output" = $'22/tcp\n80/tcp\n3306/tcp\n443\n8000:8100/tcp' ]
+}
+
+@test "current rules: OpenSSH profile counts as 22/tcp, others ignored" {
+  _status openssh
+  [ "$(ufw_current_rules)" = "22/tcp" ]
+}
+
+@test "current rules: source-limited kept, DENY/OUT/profiles dropped" {
+  _status source
+  [ "$(ufw_current_rules)" = "22/tcp" ]
+}
+
+@test "current rules: verbose-style ALLOW IN" {
+  _status verbose
+  [ "$(ufw_current_rules)" = $'22/tcp\n80' ]
+}
+
+# --- ufw_plan ---
+
+@test "ssh guard overrides none" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 22"
+  stub sshd 'echo "port 2222"'
+  ufw_plan none 80/tcp > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  grep -qx '2222/tcp' "$BATS_TEST_TMPDIR/plan"
+  grep -qx '80/tcp' "$BATS_TEST_TMPDIR/plan"
+  [ "${#R_WARNINGS[@]}" -gt 0 ]
+}
+
+@test "no guard outside ssh" {
+  stub sshd 'echo "port 2222"'
+  ufw_plan none 80/tcp > "$BATS_TEST_TMPDIR/plan"
+  ! grep -q '2222' "$BATS_TEST_TMPDIR/plan"
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = "80/tcp" ]
+  [ "${#R_WARNINGS[@]}" -eq 0 ]
+}
+
+@test "SSH_CLIENT alone triggers the guard" {
+  export SSH_CLIENT="1.2.3.4 5 22"
+  ufw_plan none > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = "22/tcp" ]
+}
+
+@test "plan auto resolves sshd port, first, deduped" {
+  stub sshd 'echo "port 2222"'
+  bats_run ufw_plan auto 80/tcp 2222/tcp 80/tcp
+  [ "$output" = $'2222/tcp\n80/tcp' ]
+}
+
+@test "ssh session with port differing from sshd adds both" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 2222"
+  stub sshd 'echo "port 2222"'
+  ufw_plan 22 > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = $'2222/tcp\n22/tcp' ]
+  [ "${#R_WARNINGS[@]}" -gt 0 ]
+}
+
+@test "numeric ssh port outside ssh session is used as is" {
+  stub sshd 'echo "port 2222"'
+  bats_run ufw_plan 2200
+  [ "$output" = "2200/tcp" ]
+}
+
+# --- ufw_apply ---
+
+@test "ssh rule applied before enable, after defaults" {
+  stub sshd 'echo "port 2222"'
+  CFG_UFW_SSH_PORT=auto
+  ufw_apply 2222/tcp 80/tcp
+  local allow80 allow22 enable deny
+  deny=$(grep -n '^default deny incoming' "$CALLS" | cut -d: -f1)
+  allow22=$(grep -n '^allow 2222/tcp' "$CALLS" | cut -d: -f1)
+  allow80=$(grep -n '^allow 80/tcp' "$CALLS" | cut -d: -f1)
+  enable=$(grep -n -- '^--force enable' "$CALLS" | cut -d: -f1)
+  grep -q '^default allow outgoing' "$CALLS"
+  [ "$deny" -lt "$allow22" ]
+  [ "$allow22" -lt "$allow80" ]
+  [ "$allow80" -lt "$enable" ]
+  [ "${R_UFW_ADDED[*]}" = "2222/tcp 80/tcp" ]
+}
+
+@test "ssh rule is applied first even if listed last" {
+  stub sshd 'echo "port 2222"'
+  ufw_apply 80/tcp 2222/tcp
+  [ "$(grep -n '^allow 2222/tcp' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^allow 80/tcp' "$CALLS" | cut -d: -f1)" ]
+}
+
+@test "ssh rule failure: ufw NOT enabled, returns 1" {
+  stub sshd 'echo "port 2222"'
+  export UFW_FAIL="allow 2222/tcp"
+  bats_run ufw_apply 2222/tcp 80/tcp
+  [ "$status" -eq 1 ]
+  ! grep -q -- '--force enable' "$CALLS"
+  ! grep -q '^allow 80/tcp' "$CALLS"
+}
+
+@test "non-ssh rule failure: partial failure, still enabled" {
+  export UFW_FAIL="allow 80/tcp"
+  ufw_apply 22/tcp 80/tcp
+  [ "$HAS_PARTIAL_FAILURE" = 1 ]
+  grep -q -- '--force enable' "$CALLS"
+}
+
+@test "existing rule not re-added" {
+  _status active
+  ufw_apply 22/tcp 80/tcp 9000/tcp
+  ! grep -q '^allow 80/tcp' "$CALLS"
+  ! grep -q '^allow 22/tcp' "$CALLS"
+  grep -q '^allow 9000/tcp' "$CALLS"
+  [ "${R_UFW_ADDED[*]}" = "9000/tcp" ]
+}
+
+@test "bare port rule covers port/tcp" {
+  _status active
+  ufw_apply 443/tcp
+  ! grep -q '^allow 443/tcp' "$CALLS"
+}
+
+@test "OpenSSH profile covers 22/tcp" {
+  _status openssh
+  ufw_apply 22/tcp
+  ! grep -q '^allow' "$CALLS"
+  grep -q -- '--force enable' "$CALLS"
+}
+
+@test "extra rules reported not deleted" {
+  _status active
+  ufw_apply 22/tcp 80/tcp
+  [[ " ${R_UFW_EXTRA[*]} " == *" 3306/tcp "* ]]
+  [[ " ${R_UFW_EXTRA[*]} " != *" 22/tcp "* ]]
+  ! grep -q 'delete' "$CALLS"
+}
+
+@test "installs ufw via apt when missing" {
+  _fw_have() { [[ -e "$BATS_TEST_TMPDIR/ufw.installed" ]]; }
+  stub apt-get "echo \"\$*\" >> \"$BATS_TEST_TMPDIR/apt-get.calls\"; touch \"$BATS_TEST_TMPDIR/ufw.installed\""
+  ufw_apply 22/tcp
+  grep -q 'install ufw' "$BATS_TEST_TMPDIR/apt-get.calls"
+  grep -q -- '--force enable' "$CALLS"
+}
+
+@test "ufw install failure returns 1" {
+  _fw_have() { return 1; }
+  stub apt-get 'exit 100'
+  bats_run ufw_apply 22/tcp
+  [ "$status" -eq 1 ]
+}
+
+@test "dry-run: no ufw changes" {
+  DRY_RUN=1
+  ufw_apply 22/tcp
+  ! grep -q -e '^allow' -e 'enable' -e '^default' "$CALLS"
+}
+
+@test "UFW_SKIP_ENABLE skips the enable step" {
+  UFW_SKIP_ENABLE=1
+  ufw_apply 22/tcp
+  grep -q '^allow 22/tcp' "$CALLS"
+  ! grep -q -- '--force enable' "$CALLS"
+}
+
+# --- configure_firewall ---
+
+@test "UFW_ENABLE=no leaves firewall alone" {
+  CFG_UFW_ENABLE=no
+  configure_firewall
+  [ ! -s "$CALLS" ]
+}
+
+@test "configure_firewall auto mode: ssh + allow list then enable" {
+  stub sshd 'echo "port 2222"'
+  CFG_UFW_ALLOW="80/tcp 8000:8100/tcp"
+  configure_firewall
+  [ "$(grep '^allow' "$CALLS" | tr '\n' ',')" = "allow 2222/tcp,allow 80/tcp,allow 8000:8100/tcp," ]
+  grep -q -- '--force enable' "$CALLS"
+}
+
+@test "configure_firewall: ssh rule failure returns 1 and flags partial failure" {
+  stub sshd 'echo "port 2222"'
+  export UFW_FAIL="allow 2222/tcp"
+  bats_run configure_firewall
+  [ "$status" -eq 1 ]
+  ! grep -q -- '--force enable' "$CALLS"
+}
+
+@test "configure_firewall: SSH session + none still opens sshd port" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 22"
+  CFG_UFW_SSH_PORT=none
+  configure_firewall >/dev/null 2>&1
+  grep -q '^allow 22/tcp' "$CALLS"
+  [ "${#R_WARNINGS[@]}" -gt 0 ]
+}
+
+# --- interactif ---
+
+# _script_confirm <réponses y/n…> et _script_ask <valeurs…> : remplacent confirm/ask_value
+# (fichiers de position, car appelés en sous-shell).
+_script_inputs() {
+  printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/conf.in"; : > "$BATS_TEST_TMPDIR/conf.pos"
+  printf '%s\n' "$2" > "$BATS_TEST_TMPDIR/ask.in"; : > "$BATS_TEST_TMPDIR/ask.pos"
+  confirm() {
+    local n; echo x >> "$BATS_TEST_TMPDIR/conf.pos"; n=$(wc -l < "$BATS_TEST_TMPDIR/conf.pos")
+    [[ "$(sed -n "${n}p" "$BATS_TEST_TMPDIR/conf.in")" == y ]]
+  }
+  ask_value() {
+    local n; echo x >> "$BATS_TEST_TMPDIR/ask.pos"; n=$(wc -l < "$BATS_TEST_TMPDIR/ask.pos")
+    sed -n "${n}p" "$BATS_TEST_TMPDIR/ask.in"
+  }
+}
+
+@test "interactive: ssh port, http, custom rules, activate" {
+  MODE=interactive
+  # confirm: configurer, ssh, http, https, activer
+  _script_inputs $'y\ny\ny\nn\ny' $'2200\n5432\n8080/tcp\nfin'
+  configure_firewall >/dev/null 2>&1
+  [ "$CFG_UFW_SSH_PORT" = 2200 ]
+  [ "$CFG_UFW_ALLOW" = "80/tcp 5432 8080/tcp" ]
+  [ "$(grep '^allow' "$CALLS" | tr '\n' ',')" = "allow 2200/tcp,allow 80/tcp,allow 5432,allow 8080/tcp," ]
+  grep -q -- '--force enable' "$CALLS"
+}
+
+@test "interactive: invalid port re-asked at most 3 times then falls back to auto" {
+  MODE=interactive
+  _script_inputs $'y\ny\nn\nn\ny' $'abc\nabc\nabc\nfin'
+  configure_firewall >/dev/null 2>&1
+  [ "$CFG_UFW_SSH_PORT" = auto ]
+  grep -q '^allow 22/tcp' "$CALLS"
+}
+
+@test "interactive: invalid custom rules stop after 3 in a row" {
+  MODE=interactive
+  _script_inputs $'y\nn\nn\nn\ny' $'bad\nbad\nbad\nbad\nbad'
+  configure_firewall >/dev/null 2>&1
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/ask.pos")" -eq 3 ]
+  [ -z "$CFG_UFW_ALLOW" ]
+}
+
+@test "interactive: ssh refused outside ssh session adds no ssh rule" {
+  MODE=interactive
+  _script_inputs $'y\nn\nn\nn\ny' $'fin'
+  configure_firewall >/dev/null 2>&1
+  [ "$CFG_UFW_SSH_PORT" = none ]
+  ! grep -q '^allow' "$CALLS"
+}
+
+@test "interactive: not activating applies rules without enable" {
+  MODE=interactive
+  _script_inputs $'y\ny\nn\nn\nn' $'22\nfin'
+  configure_firewall >/dev/null 2>&1
+  grep -q '^allow 22/tcp' "$CALLS"
+  ! grep -q -- '--force enable' "$CALLS"
+}
+
+@test "interactive: declining configuration touches nothing" {
+  MODE=interactive
+  _script_inputs $'n' ''
+  configure_firewall >/dev/null 2>&1
+  [ ! -s "$CALLS" ]
+}

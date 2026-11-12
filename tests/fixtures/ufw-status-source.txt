@@ -1,0 +1,8 @@
+Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       192.168.1.0/24
+Nginx Full                 ALLOW       Anywhere
+53                         DENY        Anywhere
+25/tcp                     ALLOW OUT   Anywhere
