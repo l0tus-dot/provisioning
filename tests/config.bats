@@ -67,7 +67,8 @@ setup() {
   done
   for v in "is_yes_no maybe" "is_port 0" "is_port 65536" "is_port abc" "is_port" \
     "is_ufw_rule 80/icmp" "is_ufw_rule 6010:6000/tcp" "is_ufw_rule 6000:6010" \
-    "is_tool_spec flatpak:org.gimp.GIMP@2" "is_tool_spec git" \n    "is_tool_spec apt:-oFoo" "is_tool_spec pip:ansible@-1" "is_service_name -x"; do
+    "is_tool_spec flatpak:org.gimp.GIMP@2" "is_tool_spec git" \
+    "is_tool_spec apt:-oFoo" "is_tool_spec pip:ansible@-1" "is_service_name -x"; do
     if $v; then echo "devrait échouer : $v"; return 1; fi
   done
 }
