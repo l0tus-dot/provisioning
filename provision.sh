@@ -5,8 +5,11 @@ set -Eeuo pipefail
 VERSION="2.0.0"
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
+# shellcheck source=lib/ui.sh
 source "$LIB_DIR/ui.sh" # @bundle-source
 
+# Lu par les tâches suivantes (chargement de la configuration).
+# shellcheck disable=SC2034
 CONFIG_FILE=""
 
 usage() {
