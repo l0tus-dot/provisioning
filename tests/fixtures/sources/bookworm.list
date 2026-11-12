@@ -13,4 +13,4 @@ deb-src http://deb.debian.org/debian/ bookworm-updates main
 deb cdrom:[Debian GNU/Linux 12.0.0 _Bookworm_ - Official amd64 DVD Binary-1]/ bookworm main
 
 # Dépôt tiers (ne doit pas être modifié)
-deb [arch=amd64 signed-by=/usr/share/keyrings/example.gpg] https://download.example.com/debian bookworm main
+deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable

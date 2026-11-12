@@ -30,7 +30,7 @@ setup() {
   grep -qx 'deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware' "$f"
   grep -qx 'deb http://deb.debian.org/debian/ bookworm-updates main contrib non-free non-free-firmware' "$f"
   # dépôt tiers, cdrom et commentaires intacts
-  grep -qx 'deb \[arch=amd64 signed-by=/usr/share/keyrings/example.gpg\] https://download.example.com/debian bookworm main' "$f"
+  grep -qx 'deb \[arch=amd64 signed-by=/usr/share/keyrings/docker.gpg\] https://download.docker.com/linux/debian bookworm stable' "$f"
   grep -qx 'deb cdrom:\[Debian GNU/Linux 12.0.0 _Bookworm_ - Official amd64 DVD Binary-1\]/ bookworm main' "$f"
   grep -qx '# deb cdrom:\[Debian GNU/Linux 12.0.0 _Bookworm_ - Official amd64 DVD Binary-1 with firmware 20230610-10:19\]/ bookworm contrib main non-free-firmware' "$f"
   grep -qx '# bookworm-updates, to get updates before a point release is made;' "$f"
@@ -168,4 +168,53 @@ setup() {
   [ "$run_status" -ne 0 ]
   [ ! -e "$BATS_TEST_TMPDIR/flatpak.calls" ]
   [ "${#R_REPOS[@]}" -eq 0 ]
+}
+
+@test "file without trailing newline and nothing to change is neither rewritten nor backed up" {
+  local f="$APT_ROOT/etc/apt/sources.list"
+  printf 'deb http://deb.debian.org/debian bookworm main contrib' > "$f"
+  debian_add_components "$f" bookworm contrib
+  [ "$(cat "$f")" = 'deb http://deb.debian.org/debian bookworm main contrib' ]
+  [ ! -e "$f.bak-$(date +%Y%m%d)" ]
+}
+
+@test "look-alike host notdebian.org is untouched" {
+  local f="$APT_ROOT/etc/apt/sources.list"
+  printf '%s\n' 'deb http://notdebian.org/x bookworm main' 'deb http://deb.debian.org/debian bookworm main' > "$f"
+  debian_add_components "$f" bookworm contrib
+  grep -qx 'deb http://notdebian.org/x bookworm main' "$f"
+  grep -qx 'deb http://deb.debian.org/debian bookworm main contrib' "$f"
+}
+
+@test "classic: third-party mirror ending in /debian is edited, docker repo is not" {
+  local f="$APT_ROOT/etc/apt/sources.list"
+  printf '%s\n' \
+    'deb http://mirror.ovh.net/debian/ bookworm main' \
+    'deb [arch=amd64] https://download.docker.com/linux/debian bookworm stable' > "$f"
+  debian_add_components "$f" bookworm contrib
+  grep -qx 'deb http://mirror.ovh.net/debian/ bookworm main contrib' "$f"
+  grep -qx 'deb \[arch=amd64\] https://download.docker.com/linux/debian bookworm stable' "$f"
+}
+
+@test "deb822: mirror edited, docker paragraph untouched" {
+  local f="$APT_ROOT/etc/apt/sources.list.d/debian.sources"
+  printf '%s\n' \
+    'Types: deb' 'URIs: http://mirror.ovh.net/debian/' 'Suites: bookworm' 'Components: main' '' \
+    'Types: deb' 'URIs: https://download.docker.com/linux/debian' 'Suites: bookworm' 'Components: stable' > "$f"
+  debian_add_components "$f" bookworm contrib
+  [ "$(grep -cx 'Components: main contrib' "$f")" -eq 1 ]
+  grep -qx 'Components: stable' "$f"
+}
+
+@test "mktemp 0600 mode is not left behind when chmod --reference fails" {
+  local f="$APT_ROOT/etc/apt/sources.list"
+  cp "$FIX/bookworm.list" "$f"
+  chmod 644 "$f"
+  [ "$(stat -c %a "$f")" = "644" ] || skip "permissions POSIX non gérées ici"
+  local real
+  real="$(command -v chmod)"
+  stub chmod "[[ \"\$1\" == --reference* ]] && exit 1; exec \"$real\" \"\$@\""
+  debian_add_components "$f" bookworm contrib
+  grep -q 'bookworm main contrib' "$f"
+  [ "$(stat -c %a "$f")" = "644" ]
 }

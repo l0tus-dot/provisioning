@@ -39,21 +39,37 @@ _repos_filter_components() {
   done
 }
 
-# Programme awk : format classique (sources.list). Seuls les dépôts *.debian.org sont
-# modifiés (tiers et cdrom: intacts). Variables : suites, comps (séparés par espaces).
+# Fonctions awk communes : isdeb(uri) vrai pour un hôte debian.org (ou sous-domaine) ou un
+# miroir dont le chemin finit par /debian ou /debian-security.
+# shellcheck disable=SC2016
+_REPOS_AWK_COMMON='
+function isdeb(u,   p, host, path) {
+  if (u !~ /^https?:[/][/]/) return 0
+  sub(/^https?:[/][/]/, "", u)
+  p = index(u, "/")
+  host = (p ? substr(u, 1, p - 1) : u)
+  path = (p ? substr(u, p) : "")
+  sub(/:[0-9]+$/, "", host)
+  return (host ~ /(^|[.])debian[.]org$/ || path ~ /[/]debian(-security)?[/]?$/)
+}
+'
+
+# Programme awk : format classique (sources.list). Seuls les dépôts Debian (voir isdeb) ayant
+# déjà le composant main sont modifiés (tiers et cdrom: intacts). Variables : suites, comps.
 # shellcheck disable=SC2016  # le programme awk contient des $ littéraux
 _REPOS_AWK_CLASSIC='
 BEGIN { ns = split(suites, S, " "); nc = split(comps, C, " ") }
 /^[ \t]*deb(-src)?[ \t]/ {
   i = 2
   if ($i ~ /^\[/) { while (i <= NF && $i !~ /\]$/) i++; i++ }
-  if (i + 1 > NF || $i !~ /^https?:[/][/][^/]*debian[.]org([/]|$)/) { print; next }
+  if (i + 1 > NF || !isdeb($i)) { print; next }
   suite = $(i + 1); hit = 0
   for (k = 1; k <= ns; k++) if (suite == S[k]) hit = 1
   if (!hit) { print; next }
   last = i + 1
   delete have
   for (j = i + 2; j <= NF && $j !~ /^#/; j++) { have[$j] = 1; last = j }
+  if (!("main" in have)) { print; next }
   add = ""
   for (k = 1; k <= nc; k++) if (!(C[k] in have)) { add = add " " C[k]; have[C[k]] = 1 }
   if (add == "") { print; next }
@@ -74,7 +90,10 @@ BEGIN { ns = split(suites, S, " "); nc = split(comps, C, " ") }
 function flush(   k, k2, m, w, deb, hit, ci, add, have, cw, nw) {
   if (n == 0) return
   hit = 0; ci = 0; deb = 0
-  for (k = 1; k <= n; k++) if (L[k] ~ /^[Uu][Rr][Ii][Ss]:.*debian[.]org/) deb = 1
+  for (k = 1; k <= n; k++) if (L[k] ~ /^[Uu][Rr][Ii][Ss]:/) {
+    nw = split(L[k], w, /[ \t]+/)
+    for (m = 2; m <= nw; m++) if (isdeb(w[m])) deb = 1
+  }
   for (k = 1; k <= n; k++) {
     if (L[k] ~ /^[Ss]uites:/) {
       nw = split(L[k], w, /[ \t]+/)
@@ -86,9 +105,11 @@ function flush(   k, k2, m, w, deb, hit, ci, add, have, cw, nw) {
     nw = split(L[ci], cw, /[ \t]+/)
     for (m = 2; m <= nw; m++) have[cw[m]] = 1
     add = ""
-    for (k = 1; k <= nc; k++) if (!(C[k] in have)) { add = add " " C[k]; have[C[k]] = 1 }
-    sub(/[ \t]+$/, "", L[ci])
-    L[ci] = L[ci] add
+    if ("main" in have) {
+      for (k = 1; k <= nc; k++) if (!(C[k] in have)) { add = add " " C[k]; have[C[k]] = 1 }
+      sub(/[ \t]+$/, "", L[ci])
+      L[ci] = L[ci] add
+    }
   }
   for (k = 1; k <= n; k++) print L[k]
   n = 0
@@ -115,7 +136,7 @@ debian_add_components() {
   local suites="$codename $codename-updates $codename-security"
   local new
   # Le "x" final protège les retours à la ligne terminaux de la substitution de commande.
-  new="$(awk -v suites="$suites" -v comps="${wanted[*]}" "$prog" "$file" || exit 1; printf x)" || {
+  new="$(awk -v suites="$suites" -v comps="${wanted[*]}" "$_REPOS_AWK_COMMON$prog" "$file" || exit 1; printf x)" || {
     error "Échec de la modification de $file"
     return 1
   }
@@ -123,6 +144,8 @@ debian_add_components() {
   local old
   old="$(cat "$file"; printf x)"
   old="${old%x}"
+  # awk termine toujours la dernière ligne par un saut de ligne : normaliser avant de comparer.
+  [[ -z "$old" || "$old" == *$'\n' ]] || old+=$'\n'
   if [[ "$new" == "$old" ]]; then
     return 0
   fi
@@ -137,8 +160,11 @@ debian_add_components() {
   local tmp
   tmp="$(mktemp "$file.XXXXXX")" || { error "Création du fichier temporaire impossible"; return 1; }
   # Même mode/propriétaire que l'original, puis contenu remplacé de façon atomique.
-  chmod --reference="$file" "$tmp" 2>/dev/null || true
-  chown --reference="$file" "$tmp" 2>/dev/null || true
+  # mktemp crée en 0600 : repli sur 644 root:root pour que l'utilisateur _apt puisse lire.
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod 644 "$tmp" || { rm -f "$tmp"; error "chmod impossible sur $tmp"; return 1; }
+  if ! chown --reference="$file" "$tmp" 2>/dev/null; then
+    chown root:root "$tmp" 2>/dev/null || [[ "$(id -u)" -ne 0 ]] || { rm -f "$tmp"; error "chown impossible sur $tmp"; return 1; }
+  fi
   printf '%s' "$new" > "$tmp" && mv -f "$tmp" "$file" || {
     rm -f "$tmp"
     error "Échec de l'écriture de $file"
