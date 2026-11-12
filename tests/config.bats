@@ -67,7 +67,7 @@ setup() {
   done
   for v in "is_yes_no maybe" "is_port 0" "is_port 65536" "is_port abc" "is_port" \
     "is_ufw_rule 80/icmp" "is_ufw_rule 6010:6000/tcp" "is_ufw_rule 6000:6010" \
-    "is_tool_spec flatpak:org.gimp.GIMP@2" "is_tool_spec git"; do
+    "is_tool_spec flatpak:org.gimp.GIMP@2" "is_tool_spec git" \n    "is_tool_spec apt:-oFoo" "is_tool_spec pip:ansible@-1" "is_service_name -x"; do
     if $v; then echo "devrait échouer : $v"; return 1; fi
   done
 }
@@ -93,4 +93,12 @@ setup() {
   after=$(set | grep '^CFG_' | sort)
   [ "$before" = "$after" ]
   [ "$CFG_UFW_SSH_PORT" = "2222" ]
+}
+
+@test "glob characters are not expanded during validation" {
+  mkdir "$BATS_TEST_TMPDIR/d" && touch "$BATS_TEST_TMPDIR/d/a.service" "$BATS_TEST_TMPDIR/d/b.service"
+  printf 'SERVICES_MASK=*\n' > "$BATS_TEST_TMPDIR/glob.conf"
+  cd "$BATS_TEST_TMPDIR/d"
+  bats_run config_load "$BATS_TEST_TMPDIR/glob.conf"
+  [ "$status" -eq 1 ]
 }

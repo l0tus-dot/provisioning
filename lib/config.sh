@@ -47,18 +47,19 @@ is_ufw_rule() {
 
 is_tool_spec() {
   local v="${1:-}"
-  [[ "$v" =~ ^(apt|snap|flatpak|pip|npm|cargo):[A-Za-z0-9._+-]+(@[A-Za-z0-9._~+-]+)?$ ]] || return 1
+  [[ "$v" =~ ^(apt|snap|flatpak|pip|npm|cargo):[A-Za-z0-9][A-Za-z0-9._+-]*(@[A-Za-z0-9][A-Za-z0-9._~+-]*)?$ ]] || return 1
   [[ "$v" == flatpak:*@* ]] && return 1
   return 0
 }
 
-is_service_name() { [[ "${1:-}" =~ ^[A-Za-z0-9@._-]+$ ]]; }
+is_service_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9@._-]*$ ]]; }
 
 # _config_all_words <validateur> <liste> : chaque mot doit être valide.
 _config_all_words() {
   local fn="$1" w
-  # shellcheck disable=SC2086
-  for w in $2; do
+  local -a ws
+  read -r -a ws <<< "$2"
+  for w in "${ws[@]}"; do
     "$fn" "$w" || return 1
   done
 }
