@@ -71,6 +71,8 @@ setup() {
     if $v; then echo "devrait échouer : $v"; return 1; fi
   done
 }
+
+@test "write then load round-trips" {
   CFG_UPDATE_SYSTEM=no
   CFG_TOOLS="apt:git snap:code pip:black@24.1"
   CFG_DEBIAN_COMPONENTS="contrib non-free-firmware"
