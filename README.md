@@ -1,136 +1,152 @@
-# 🛠️ Scripts de Post-Installation
+# Provisioning Ubuntu / Debian
 
-Scripts interactifs de configuration d'une machine vierge **Ubuntu** ou **Debian**.
+`provision.sh` prépare une machine **Ubuntu** ou **Debian** fraîchement installée : mise à jour, dépôts, outils, pare-feu UFW, services inutiles. Il remplace `ubuntu-setup.sh` et `debian-setup.sh`.
+
+- Ubuntu 22.04 / 24.04 / 26.04, Debian 11 / 12 / 13 (Bash 5 ou plus, exécution en root).
+- Deux modes : **interactif** (questions au fil de l'eau) et **automatique** (`--config`, aucune question, résultat identique sur toutes les machines).
+- Relançable sans danger : rien n'est dupliqué, aucune règle UFW n'est supprimée.
+
+```
+provision.sh              point d'entrée
+lib/*.sh                  bibliothèques (config, os, update, repos_debian, tools, firewall, services, report)
+examples/parc.conf        configuration d'exemple : serveur du parc
+examples/poste.conf       configuration d'exemple : poste de travail
+```
+
+Les releases GitHub fournissent aussi une version **fichier unique** (`dist/provision.sh`, générée par le script de bundle, Task 11) à copier telle quelle sur les machines.
 
 ---
 
-## 📂 Fichiers
+## Utilisation
 
-| Script | Cible |
-|---|---|
-| `ubuntu-setup.sh` | Ubuntu 22.04 / 24.04 / 26.04 LTS (et dérivés) |
-| `debian-setup.sh` | Debian 11 (Bullseye) / 12 (Bookworm) / 13 |
-
----
-
-## 🚀 Utilisation
+### Interactif
 
 ```bash
-# Ubuntu
-sudo bash ubuntu-setup.sh
-
-# Debian
-sudo bash debian-setup.sh
+sudo ./provision.sh
 ```
+
+Les étapes sont enchaînées dans cet ordre, chacune commence par sa question : mise à jour du système, dépôts Debian (contrib, non-free, backports, snapd), flatpak, outils, pare-feu UFW, services, rapport. À la fin, le script propose d'enregistrer vos réponses dans `/root/provision-AAAAMMJJ.conf`, rejouable ensuite sur le parc.
+
+Pour un outil saisi sans gestionnaire, apt est interrogé d'abord ; s'il ne le connaît pas, le script liste les gestionnaires où le nom **exact** existe et demande lequel utiliser. On peut aussi saisir directement `snap:code`.
+
+### Mode parc (automatique)
+
+```bash
+scp provision.sh parc.conf admin@machine:
+ssh -t admin@machine 'sudo bash provision.sh --config parc.conf'
+```
+
+`--config` signifie toujours « automatique » : aucune lecture du clavier ni de `/dev/tty`. Si la configuration ne couvre pas une décision, le script prend l'option sûre et l'indique dans le rapport. Un fichier invalide fait échouer le script (code 1) **avant toute modification**.
+
+### Simulation
+
+```bash
+sudo ./provision.sh --config parc.conf --dry-run
+```
+
+Affiche ce qui serait fait (`[dry-run] …`) sans rien modifier. Sans root, le dry-run fonctionne avec un simple avertissement.
+
+### Options
+
+| Option | Rôle |
+|---|---|
+| `--config <fichier>` | mode automatique à partir d'un fichier de configuration |
+| `--dry-run` | affiche les actions sans les exécuter |
+| `--log <fichier>` | fichier journal (défaut : `/var/log/provision/provision-AAAAMMJJ-HHMMSS.log`) |
+| `--version`, `--help` | version, aide |
 
 ---
 
-## 🔄 Déroulement interactif
+## Fichier de configuration
 
-### Ubuntu (`ubuntu-setup.sh`)
+Format `CLÉ=valeur`, une par ligne, `#` pour les commentaires, guillemets autorisés. Le fichier est **analysé, jamais exécuté** : une clé inconnue ou une valeur invalide (y compris `$`, `` ` `` ou `"` dans une valeur) fait échouer le script. Toute clé absente prend sa valeur par défaut. Voir `examples/parc.conf` et `examples/poste.conf`.
 
-| Étape | Description |
-|---|---|
-| 1 | Vérification des prérequis (root, Internet) |
-| 2 | Mise à jour du système (`apt update && upgrade`) |
-| 3 | **Installation des outils** (interactive) |
-| 4 | Configuration du pare-feu UFW |
-| 5 | **Gestion des services inutiles** (interactive) |
-| 6 | Rapport de synthèse + redémarrage optionnel |
-
-### Debian (`debian-setup.sh`) — étapes supplémentaires
-
-| Étape | Description |
-|---|---|
-| 1 | Vérification des prérequis |
-| **2** | **Configuration des dépôts** (contrib, non-free, backports, snap, flatpak) |
-| 3 | Mise à jour du système |
-| 4 | Installation des outils |
-| 5 | Configuration UFW |
-| 6 | Gestion des services |
-| 7 | Rapport de synthèse |
-
----
-
-## 🔧 Installation des outils (étape clé)
-
-Le script vous demande les outils **un par un** :
-
-```
-[?] Nom de l'outil (ou 'fin') : git
-[?] Version de git ? (laisser vide = dernière) :
-[OK] Ajouté : git
-
-[?] Nom de l'outil (ou 'fin') : node
-[?] Version de node ? (laisser vide = dernière) : 20.0.0
-[OK] Ajouté : node v20.0.0
-
-[?] Nom de l'outil (ou 'fin') : fin
-```
-
-### Gestionnaires supportés (ordre de priorité)
-
-| Ordre | Gestionnaire | Exemples d'outils |
+| Clé | Défaut | Rôle |
 |---|---|---|
-| 1 | **apt** | git, curl, vim, wireshark, nmap… |
-| 2 | **snap** | code, discord, spotify, postman… |
-| 3 | **flatpak** | org.gimp.GIMP, com.obsproject.Studio… |
-| 4 | **pip** | httpie, ansible, black, requests… |
-| 5 | **npm** | typescript, eslint, nodemon… |
-| 6 | **cargo** | ripgrep, bat, fd-find, exa… |
+| `UPDATE_SYSTEM` | `yes` | `apt update` + `full-upgrade` + `autoremove` |
+| `TOOLS` | vide | liste `gestionnaire:nom[@version]` séparée par des espaces, ex. `apt:git apt:curl snap:code pip:ansible@9.0 cargo:ripgrep` |
+| `DEBIAN_COMPONENTS` | vide | Debian seulement, ex. `contrib non-free non-free-firmware` |
+| `DEBIAN_BACKPORTS` | `no` | Debian seulement |
+| `INSTALL_SNAPD` | `no` | Debian seulement |
+| `INSTALL_FLATPAK` | `no` | installe flatpak et ajoute Flathub (Ubuntu et Debian) |
+| `UFW_ENABLE` | `yes` | `no` laisse le pare-feu tel quel (ne le désactive pas) |
+| `UFW_SSH_PORT` | `auto` | `auto` = port lu dans la configuration sshd effective (`sshd -T`), sinon 22 ; ou un numéro ; ou `none` |
+| `UFW_ALLOW` | vide | règles supplémentaires, ex. `80/tcp 443/tcp 5432/tcp` |
+| `SERVICES_MASK` | vide | services à masquer |
+| `SERVICES_DISABLE` | vide | services à désactiver au démarrage |
+| `REBOOT` | `no` | `yes` / `no` / `if-needed` (présence de `/var/run/reboot-required`) |
 
-Si aucun gestionnaire ne trouve l'outil, une erreur claire est affichée dans le rapport final.
+### Outils : gestionnaires et versions
 
-### Sélection de version
+Chaque outil indique son gestionnaire (`apt`, `snap`, `flatpak`, `pip`, `npm`, `cargo`) : pas de chaîne de repli, donc jamais de paquet « approchant ». Gestionnaire absent (ex. `snap:` sans snapd) : échec explicite de cet outil.
 
-- Laisser vide → **dernière version** disponible
-- Entrer une version → le script vérifie si elle existe et propose un fallback si introuvable
+| Gestionnaire | Sens de `@version` | Emplacement |
+|---|---|---|
+| `apt` | préfixe de version (`apt:nodejs@20`) | système |
+| `snap` | canal (`snap:node@20` = `20/stable`) | système |
+| `flatpak` | non supporté (config refusée) ; identifiant complet requis (`org.gimp.GIMP`) | système |
+| `pip` | version exacte ; pipx uniquement (`PIPX_HOME=/opt/pipx`, binaires dans `/usr/local/bin`) | système |
+| `npm` | version exacte | global (`-g`) |
+| `cargo` | version exacte | `/usr/local` |
+
+Un outil déjà présent dans une autre version n'est **ni mis à niveau ni rétrogradé** : un avertissement apparaît dans le rapport.
 
 ---
 
-## ⚙️ Gestion des services inutiles
+## Garde-fous
 
-Trois niveaux de désactivation proposés **pour chaque service** :
+- **SSH** : en session SSH, le port SSH effectif est toujours autorisé dans UFW avant l'activation, même avec `UFW_SSH_PORT=none` (avertissement dans le rapport).
+- **UFW en relance** : les règles de la configuration sont **ajoutées**, jamais supprimées (pas de `ufw reset`). Les règles déjà présentes mais absentes de la configuration sont listées dans le rapport, à retirer à la main si besoin.
+- **Services** : la liste « sûrs » (avahi-daemon, cups, cups-browsed, bluetooth, ModemManager, whoopsie, apport, speech-dispatcher, saned, postfix, exim4, rpcbind, nfs-common) peut être traitée en lot. Les services « sensibles » (unattended-upgrades, apt-daily, apt-daily-upgrade, rsyslog, wpa_supplicant, NetworkManager-wait-online, thermald, snapd) ne sont proposés qu'un par un, ou avertissent en mode config. `ssh`/`sshd` sont toujours refusés. Masquer = `stop` + `mask` ; désactiver = `disable --now`.
+- **Mise à jour** : `DEBIAN_FRONTEND=noninteractive`, fichiers de configuration modifiés localement conservés. Un échec d'apt est une erreur bloquante (code 1).
+- **Connectivité** : vérifiée par un `apt-get update` réussi (pas de ping).
+- **Système non supporté** : refusé en mode `--config` ; avertissement et confirmation en interactif.
 
-| Choix | Méthode | Effet |
-|---|---|---|
-| **1 — Totalement** | `systemctl mask` | Le service ne peut plus démarrer, même manuellement |
-| **2 — Partiellement** | `systemctl disable --now` | Ne démarre plus au boot, mais démarrable manuellement |
-| **3 — Aucun changement** | — | Le service reste tel quel |
+---
 
-### Option globale (gain de temps)
+## Codes de sortie, journaux, rapport
 
-Au lieu de répondre service par service, vous pouvez choisir :
-- **A** — Gérer un par un *(recommandé)*
-- **B** — Masquer tout (désactivation totale de toute la liste)
-- **C** — Désactiver tout partiellement
-- **D** — Ignorer complètement
-
-### Services de la liste Ubuntu
-
-| Service | Description |
+| Code | Signification |
 |---|---|
-| `snapd` | Daemon Snap |
-| `avahi-daemon` | mDNS/Bonjour |
-| `cups` / `cups-browsed` | Impression |
-| `bluetooth` | Bluetooth |
-| `ModemManager` | Modems GSM/CDMA |
-| `whoopsie` | Rapports de crash Ubuntu |
-| `apport` | Collecte d'erreurs |
-| `thermald` | Gestion thermique |
-| `unattended-upgrades` | Mises à jour automatiques |
-| `rsyslog` | Journalisation système |
-| `postfix` | Serveur SMTP local |
-| `speech-dispatcher` | Synthèse vocale |
+| `0` | tout est OK |
+| `1` | erreur bloquante : configuration invalide, pas root, système non supporté, apt en échec |
+| `2` | terminé avec des échecs partiels (un outil ou un service) |
 
-### Services supplémentaires (Debian uniquement)
+- Journal complet (sortie d'apt incluse, sans couleurs) : `/var/log/provision/provision-AAAAMMJJ-HHMMSS.log` (ou `--log`).
+- Rapport final : affiché et copié dans `/var/log/provision/rapport-AAAAMMJJ-HHMMSS.txt` (outils installés/échoués, dépôts, règles UFW, services, avertissements, redémarrage requis).
+- En dry-run sans root, le journal est écrit sous `$TMPDIR` (ou `/tmp`).
 
-| Service | Description |
+---
+
+## Ancien → nouveau
+
+| Avant | Maintenant |
 |---|---|
-| `exim4` | Agent mail Exim |
-| `apt-daily` / `apt-daily-upgrade` | Maintenance apt automatique |
-| `rpcbind` | Port mapper RPC (si NFS inutilisé) |
-| `nfs-common` | Support NFS client |
+| `sudo bash ubuntu-setup.sh` | `sudo ./provision.sh` |
+| `sudo bash debian-setup.sh` | `sudo ./provision.sh` (Debian détecté automatiquement) |
+| `--non-interactive` (annoncé, jamais implémenté) | `--config fichier.conf` |
+| UFW « personnaliser les politiques » | retiré : refus entrant, autorisation sortant |
+
+---
+
+## Liste de contrôle de validation sur VM
+
+À dérouler sur des VM (Ubuntu 24.04 et Debian 12/13 au minimum) avant de déployer sur le parc :
+
+- [ ] `--config examples/parc.conf --dry-run` : rien n'est modifié, les actions prévues sont affichées.
+- [ ] **UFW via SSH, port non standard** : sshd sur le port 2222, connexion SSH sur ce port, lancement avec `UFW_SSH_PORT=auto` puis `none` : la session reste ouverte, `ufw status` montre `2222/tcp` autorisé.
+- [ ] **Relance idempotente** : deuxième exécution identique, aucune règle UFW dupliquée, aucun dépôt dupliqué, outils « déjà installés », code de sortie `0`.
+- [ ] **Règle UFW manuelle** ajoutée entre deux exécutions : conservée, listée dans le rapport.
+- [ ] **Services sensibles** : en interactif, absents de l'option « tout désactiver » ; en config, avertissement dans le rapport ; `snapd` refusé si des outils `snap:` sont installés.
+- [ ] **Debian 13 (deb822)** : `DEBIAN_COMPONENTS` modifie `debian.sources` (champ `Components:`), sauvegarde `*.bak-AAAAMMJJ`, backports dans un fichier `.sources` dédié.
+- [ ] Outil en échec volontaire (`apt:inexistant`) : code de sortie `2`, outil listé dans le rapport.
+- [ ] Fichier de configuration invalide : code `1`, aucune modification.
+- [ ] `ssh -t machine 'sudo bash provision.sh --config parc.conf </dev/null'` se termine sans rester bloqué.
+- [ ] `REBOOT=if-needed` : redémarrage seulement si `/var/run/reboot-required` existe.
+
+---
+
+## Commandes utiles : services (systemd)
 
 ### 🔍 Commandes pour vérifier et gérer les services (Systemd)
 
@@ -157,15 +173,10 @@ sudo systemctl unmask <nom_service>
 sudo systemctl enable --now <nom_service>
 ```
 
+
 ---
 
-## 🔒 Pare-feu UFW
-
-Configuration interactive :
-- Politique par défaut : **bloquer entrant, autoriser sortant**
-- SSH (port personnalisable)
-- HTTP / HTTPS (optionnels)
-- Règles personnalisées supplémentaires
+## Commandes utiles : pare-feu UFW
 
 ### 🔍 Commandes pour vérifier et gérer UFW
 
@@ -199,20 +210,7 @@ sudo journalctl -u ufw -f
 sudo tail -f /var/log/ufw.log
 ```
 
----
-
-## 📊 Rapport de synthèse
-
-En fin de script, un rapport récapitule :
-- ✅ Outils installés (avec version et gestionnaire)
-- ❌ Outils en échec
-- 🔒 Règles UFW ajoutées
-- 🔴 Services masqués (totalement)
-- 🟡 Services désactivés (au démarrage)
 
 ---
 
-## ⚠️ Notes
-
-> Ces scripts requièrent les droits **root** (`sudo bash`).
-> Testez-les sur une VM ou un environnement de test avant une production.
+> Le script requiert les droits **root**. Testez-le sur une VM avant tout usage en production.
