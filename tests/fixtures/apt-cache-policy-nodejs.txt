@@ -1,0 +1,10 @@
+nodejs:
+  Installed: 18.19.1+dfsg-6ubuntu5
+  Candidate: 20.19.2+dfsg-1
+  Version table:
+     20.19.2+dfsg-1 500
+        500 http://deb.example.org/ubuntu noble-updates/universe amd64 Packages
+ *** 18.19.1+dfsg-6ubuntu5 100
+        100 /var/lib/dpkg/status
+     2:18.19.0+dfsg-1 500
+        500 http://deb.example.org/ubuntu noble/universe amd64 Packages
