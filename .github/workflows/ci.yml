@@ -22,7 +22,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Sous-modules
-        run: git submodule update --init
+        with:
+          submodules: true
       - name: Tests unitaires
         run: tests/run.sh
+
+  smoke:
+    name: smoke (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:11
+          - debian:12
+          - debian:13
+        include:
+          # Peut ne pas encore être publiée sur Docker Hub.
+          - image: ubuntu:26.04
+            experimental: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bundle
+        run: scripts/bundle.sh
+      - name: Test de fumée
+        run: docker run --rm -v "$PWD:/src" -w /src ${{ matrix.image }} bash tests/smoke.sh

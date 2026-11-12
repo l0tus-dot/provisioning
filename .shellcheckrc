@@ -1,0 +1,3 @@
+# Les bibliothèques posent des variables globales consommées dans d'autres fichiers.
+external-sources=true
+disable=SC2034
