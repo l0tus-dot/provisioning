@@ -62,14 +62,14 @@ _answers_from() {
 }
 
 @test "apt version with epoch is installed as full string" {
-  stub apt-cache 'if [ "$1" = policy ]; then cat "'"$REPO_ROOT"'/tests/fixtures/apt-cache-policy-nodejs.txt"; else exit 0; fi'
+  stub apt-cache 'if [ "$1" = policy ]; then cat "'"$REPO_ROOT"'/tests/fixtures/apt-cache-policy-nodejs.txt"; else echo "Package: nodejs"; fi'
   stub_log apt-get
   tool_install apt:node@18.19.0
   grep -qx 'install -y -- nodejs=2:18.19.0+dfsg-1' "$BATS_TEST_TMPDIR/apt-get.calls"
 }
 
 @test "apt install success with no output" {
-  stub apt-cache 'exit 0'
+  stub apt-cache 'for a; do :; done; echo "Package: $a"'
   stub apt-get 'exit 0'
   tool_install apt:git
   [ "${R_TOOLS_OK[0]}" = "apt:git" ]
@@ -92,7 +92,7 @@ _answers_from() {
 }
 
 @test "apt install failure is reported" {
-  stub apt-cache 'exit 0'
+  stub apt-cache 'for a; do :; done; echo "Package: $a"'
   stub apt-get 'exit 100'
   status=0
   tool_install apt:git || status=$?
@@ -102,7 +102,7 @@ _answers_from() {
 
 @test "already installed is skipped" {
   stub dpkg-query 'case "$*" in *Version*) echo 2.0;; *) echo "install ok installed";; esac'
-  stub apt-cache 'exit 0'
+  stub apt-cache 'for a; do :; done; echo "Package: $a"'
   stub_log apt-get
   tool_install apt:git
   [ ! -e "$BATS_TEST_TMPDIR/apt-get.calls" ]
@@ -195,7 +195,7 @@ echo "error: boom" >&2; exit 1'
 @test "dry-run installs nothing" {
   DRY_RUN=1
   stub_log apt-get
-  stub apt-cache 'exit 0'
+  stub apt-cache 'for a; do :; done; echo "Package: $a"'
   out="$(tool_install apt:git)"
   [[ "$out" == *"[dry-run]"* ]]
   [ ! -e "$BATS_TEST_TMPDIR/apt-get.calls" ]
@@ -214,7 +214,8 @@ echo "error: boom" >&2; exit 1'
   MODE=interactive
   ANSWERS=("npm:typescript@5" "git" "node" "zzz" "git" "")
   _answers_from "${ANSWERS[@]}"
-  stub apt-cache 'case "$*" in *zzz*) exit 100;; *) exit 0;; esac'
+  stub apt-cache 'for a; do :; done; case "$a" in zzz) exit 100;; esac; echo "Package: $a"'
+  _tools_candidates() { :; }
   tools_interactive 2>/dev/null
   [ "${TOOLS_SELECTED[*]}" = "npm:typescript@5 apt:git apt:nodejs" ]
 }
@@ -237,4 +238,36 @@ echo "error: boom" >&2; exit 1'
   _tools_candidates() { :; }
   tools_interactive 2>/dev/null
   [ "${#TOOLS_SELECTED[@]}" -eq 0 ]
+}
+
+@test "apt policy is parsed under a French locale" {
+  stub apt-cache 'F="'"$REPO_ROOT"'/tests/fixtures/apt-cache-policy-nodejs.txt"
+if [ "$LC_ALL" = C ]; then cat "$F"; else sed "s/Version table/Table de versions/" "$F"; fi'
+  LC_ALL=fr_FR.UTF-8
+  [ "$(apt_resolve_version nodejs 20)" = "20.19.2+dfsg-1" ]
+}
+
+@test "apt refuses a package whose name differs from the request" {
+  stub apt-cache 'echo "Package: git"'
+  stub_log apt-get
+  status=0
+  tool_install apt:g.t || status=$?
+  [ "$status" -eq 1 ]
+  [ "${R_TOOLS_FAIL[0]}" = "apt:g.t" ]
+  [ ! -e "$BATS_TEST_TMPDIR/apt-get.calls" ]
+}
+
+@test "flatpak requires a full reverse-DNS app id" {
+  stub_log flatpak
+  status=0
+  out="$(tool_install flatpak:gimp 2>&1)" || status=$?
+  [ "$status" -eq 1 ]
+  [[ "$out" == *org.gimp.GIMP* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/flatpak.calls" ]
+}
+
+@test "flatpak installs with a full app id" {
+  stub flatpak 'echo "$*" >> "'"$BATS_TEST_TMPDIR"'/flatpak.calls"; [ "$1" = info ] && exit 1; exit 0'
+  tool_install flatpak:org.gimp.GIMP
+  grep -qx 'install -y --noninteractive flathub org.gimp.GIMP' "$BATS_TEST_TMPDIR/flatpak.calls"
 }

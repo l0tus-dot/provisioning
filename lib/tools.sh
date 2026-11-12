@@ -51,18 +51,25 @@ apt_resolve_version() {
       printf '%s\n' "$v"
       return 0
     fi
-  done < <(apt-cache policy -- "$pkg" 2>/dev/null)
+  done < <(LC_ALL=C apt-cache policy -- "$pkg" 2>/dev/null)
   return 1
+}
+
+# _apt_has_package <nom> : `apt-cache show` doit renvoyer exactement « Package: <nom> »
+# (jamais un autre paquet que celui demandé).
+_apt_has_package() {
+  LC_ALL=C apt-cache show -- "$1" 2>/dev/null \
+    | awk -v n="$1" '$0 == "Package: " n { f = 1 } END { exit !f }'
 }
 
 # tool_is_installed <gestionnaire> <nom>
 tool_is_installed() {
   local mgr="$1" name="$2"
   case "$mgr" in
-    apt) [[ "$(dpkg-query -W -f='${Status}' -- "$name" 2>/dev/null)" == *"install ok installed"* ]] ;;
+    apt) [[ "$(LC_ALL=C dpkg-query -W -f='${Status}' -- "$name" 2>/dev/null)" == *"install ok installed"* ]] ;;
     snap) snap list "$name" >/dev/null 2>&1 ;;
     flatpak) flatpak info "$name" >/dev/null 2>&1 ;;
-    pip) PIPX_HOME=/opt/pipx pipx list --short 2>/dev/null | awk -v n="$name" '$1 == n { f = 1 } END { exit !f }' ;;
+    pip) PIPX_HOME=/opt/pipx LC_ALL=C pipx list --short 2>/dev/null | awk -v n="$name" '$1 == n { f = 1 } END { exit !f }' ;;
     npm) npm ls -g --depth=0 -- "$name" >/dev/null 2>&1 ;;
     cargo) [[ -f "$CRATES_TOML" ]] && grep -Fq -- "\"$name " "$CRATES_TOML" ;;
     *) return 1 ;;
@@ -73,11 +80,11 @@ tool_is_installed() {
 _tool_installed_version() {
   local mgr="$1" name="$2"
   case "$mgr" in
-    apt) dpkg-query -W -f='${Version}' -- "$name" 2>/dev/null ;;
-    snap) snap list "$name" 2>/dev/null | awk 'NR == 2 { print $2 }' ;;
-    flatpak) flatpak info "$name" 2>/dev/null | awk '$1 == "Version:" { print $2 }' ;;
-    pip) PIPX_HOME=/opt/pipx pipx list --short 2>/dev/null | awk -v n="$name" '$1 == n { print $2 }' ;;
-    npm) npm ls -g --depth=0 -- "$name" 2>/dev/null | sed -n "s/.*[ ]${name}@//p" | head -n 1 ;;
+    apt) LC_ALL=C dpkg-query -W -f='${Version}' -- "$name" 2>/dev/null ;;
+    snap) LC_ALL=C snap list "$name" 2>/dev/null | awk 'NR == 2 { print $2 }' ;;
+    flatpak) LC_ALL=C flatpak info "$name" 2>/dev/null | awk '$1 == "Version:" { print $2 }' ;;
+    pip) PIPX_HOME=/opt/pipx LC_ALL=C pipx list --short 2>/dev/null | awk -v n="$name" '$1 == n { print $2 }' ;;
+    npm) LC_ALL=C npm ls -g --depth=0 -- "$name" 2>/dev/null | sed -n "s/.*[ ]${name}@//p" | head -n 1 ;;
     cargo) [[ -f "$CRATES_TOML" ]] && sed -n "s/^\"${name} \([^ ]*\) .*/\1/p" "$CRATES_TOML" | head -n 1 ;;
   esac
   return 0
@@ -117,6 +124,11 @@ tool_install() {
   mgr="$T_MGR"; name="$T_NAME"; ver="$T_VER"
   [[ "$mgr" == apt ]] && name="$(tool_alias "$name")"
 
+  if [[ "$mgr" == flatpak && ! "$name" =~ ^[^.]+(\.[^.]+){2,}$ ]]; then
+    _tool_record_fail "$spec" "$spec : flatpak exige l'identifiant complet de l'application (ex. org.gimp.GIMP)"
+    return 1
+  fi
+
   if [[ "$DRY_RUN" != "1" ]]; then
     local need="$mgr"
     case "$mgr" in
@@ -145,7 +157,7 @@ tool_install() {
   info "Installation de $spec…"
   case "$mgr" in
     apt)
-      if ! apt-cache show -- "$name" >/dev/null 2>&1; then
+      if ! _apt_has_package "$name"; then
         _tool_record_fail "$spec" "$spec : paquet apt introuvable"
         return 1
       fi
@@ -160,7 +172,7 @@ tool_install() {
       _apt "Installation de $spec…" install -y -- "$pkg" || rc=$?
       ;;
     snap)
-      local -a args=(snap install)
+      local -a args=(env LC_ALL=C snap install)
       [[ -n "$ver" ]] && args+=("--channel=$ver/stable")
       args+=("$name")
       _TOOLS_OUT=""
@@ -212,7 +224,7 @@ _tools_candidates() {
   if _tools_have flatpak && flatpak remote-info flathub "$n" >/dev/null 2>&1; then echo flatpak; fi
   if _tools_have pip && pip index versions "$n" >/dev/null 2>&1; then echo pip; fi
   if _tools_have npm && npm view "$n" name >/dev/null 2>&1; then echo npm; fi
-  if _tools_have cargo && cargo search --limit 1 "$n" 2>/dev/null | grep -Fq "$n = "; then echo cargo; fi
+  if _tools_have cargo && LC_ALL=C cargo search --limit 1 "$n" 2>/dev/null | grep -Fq "$n = "; then echo cargo; fi
   return 0
 }
 
@@ -236,7 +248,7 @@ tools_interactive() {
       ver=""
       [[ "$entry" == *@* ]] && ver="@${entry#*@}"
       alias="$(tool_alias "$name")"
-      if apt-cache show -- "$alias" >/dev/null 2>&1; then
+      if _apt_has_package "$alias"; then
         spec="apt:$alias$ver"
       else
         mapfile -t cands < <(_tools_candidates "$name")
