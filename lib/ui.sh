@@ -109,7 +109,7 @@ run_with_spinner() {
     run "$@"
     return
   fi
-  local frames='|/-\' i=0 pid rc=0
+  local frames="|/-\\" i=0 pid rc=0
   run "$@" &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
