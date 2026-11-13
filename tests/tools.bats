@@ -65,7 +65,7 @@ _answers_from() {
   stub apt-cache 'if [ "$1" = policy ]; then cat "'"$REPO_ROOT"'/tests/fixtures/apt-cache-policy-nodejs.txt"; else echo "Package: nodejs"; fi'
   stub_log apt-get
   tool_install apt:nodejs@18.19.0
-  grep -qx 'install -y -- nodejs=2:18.19.0+dfsg-1' "$BATS_TEST_TMPDIR/apt-get.calls"
+  grep -q 'install -y -- nodejs=2:18.19.0+dfsg-1$' "$BATS_TEST_TMPDIR/apt-get.calls"
 }
 
 @test "apt install success with no output" {
@@ -276,5 +276,5 @@ if [ "$LC_ALL" = C ]; then cat "$F"; else sed "s/Version table/Table de versions
   stub apt-cache 'for a; do :; done; echo "Package: $a"'
   stub_log apt-get
   tool_install apt:node
-  grep -qx 'install -y -- node' "$BATS_TEST_TMPDIR/apt-get.calls"
+  grep -q ' install -y -- node$' "$BATS_TEST_TMPDIR/apt-get.calls"
 }

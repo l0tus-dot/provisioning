@@ -236,7 +236,7 @@ setup() {
   DRY_RUN=1
   local f="$APT_ROOT/etc/apt/sources.list"
   cp "$FIX/bookworm.list" "$f"
-  bats_run debian_add_components "$f" bookworm contrib
+  debian_add_components "$f" bookworm contrib > /dev/null
   [ "${#R_REPOS[@]}" -eq 1 ]
   [[ "${R_REPOS[0]}" == *"(dry-run)" ]]
 }
