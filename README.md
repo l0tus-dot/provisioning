@@ -13,7 +13,7 @@ examples/parc.conf        configuration d'exemple : serveur du parc
 examples/poste.conf       configuration d'exemple : poste de travail
 ```
 
-Les releases GitHub fournissent aussi une version **fichier unique** (`dist/provision.sh`, générée par le script de bundle, Task 11) à copier telle quelle sur les machines.
+Les releases GitHub fournissent aussi une version **fichier unique** (`dist/provision.sh`, générée par `scripts/bundle.sh [sortie]`, par défaut `dist/provision.sh`) à copier telle quelle sur les machines.
 
 ---
 
@@ -100,6 +100,8 @@ Un outil déjà présent dans une autre version n'est **ni mis à niveau ni rét
 - **Services** : la liste « sûrs » (avahi-daemon, cups, cups-browsed, bluetooth, ModemManager, whoopsie, apport, speech-dispatcher, saned, postfix, exim4, rpcbind, nfs-common) peut être traitée en lot. Les services « sensibles » (unattended-upgrades, apt-daily, apt-daily-upgrade, rsyslog, wpa_supplicant, NetworkManager-wait-online, thermald, snapd) ne sont proposés qu'un par un, ou avertissent en mode config. `ssh`/`sshd` sont toujours refusés. Masquer = `stop` + `mask` ; désactiver = `disable --now`.
 - **Mise à jour** : `DEBIAN_FRONTEND=noninteractive`, fichiers de configuration modifiés localement conservés. Un échec d'apt est une erreur bloquante (code 1).
 - **Connectivité** : vérifiée par un `apt-get update` réussi (pas de ping).
+- **Conteneurs** : UFW n'est pas détecté comme inutilisable dans un conteneur (Docker, LXC) ; y mettre `UFW_ENABLE="no"` (pas de systemd non plus : `SERVICES_MASK`/`SERVICES_DISABLE` vides).
+- **Noms d'outils** : les alias (`node` devient `nodejs`, `fd` devient `fd-find`…) ne servent qu'à la saisie interactive ; un fichier de configuration nomme toujours le paquet exact (`apt:nodejs`). Les outils sont installés dans l'ordre de la liste : placer `apt:npm` et `apt:cargo` avant `npm:` et `cargo:`.
 - **Système non supporté** : refusé en mode `--config` ; avertissement et confirmation en interactif.
 
 ---
@@ -113,7 +115,7 @@ Un outil déjà présent dans une autre version n'est **ni mis à niveau ni rét
 | `2` | terminé avec des échecs partiels (un outil ou un service) |
 
 - Journal complet (sortie d'apt incluse, sans couleurs) : `/var/log/provision/provision-AAAAMMJJ-HHMMSS.log` (ou `--log`).
-- Rapport final : affiché et copié dans `/var/log/provision/rapport-AAAAMMJJ-HHMMSS.txt` (outils installés/échoués, dépôts, règles UFW, services, avertissements, redémarrage requis).
+- Rapport final : affiché et copié dans `/var/log/provision/rapport-AAAAMMJJ-HHMMSS.txt` (outils installés/échoués, dépôts, règles UFW, services, erreurs, avertissements, redémarrage requis).
 - En dry-run sans root, le journal est écrit sous `$TMPDIR` (ou `/tmp`).
 
 ---
@@ -138,7 +140,7 @@ Un outil déjà présent dans une autre version n'est **ni mis à niveau ni rét
 - [ ] **Relance idempotente** : deuxième exécution identique, aucune règle UFW dupliquée, aucun dépôt dupliqué, outils « déjà installés », code de sortie `0`.
 - [ ] **Règle UFW manuelle** ajoutée entre deux exécutions : conservée, listée dans le rapport.
 - [ ] **Services sensibles** : en interactif, absents de l'option « tout désactiver » ; en config, avertissement dans le rapport ; `snapd` refusé si des outils `snap:` sont installés.
-- [ ] **Debian 13 (deb822)** : `DEBIAN_COMPONENTS` modifie `debian.sources` (champ `Components:`), sauvegarde `*.bak-AAAAMMJJ`, backports dans un fichier `.sources` dédié.
+- [ ] **Debian 13 (deb822)** : `DEBIAN_COMPONENTS` modifie `debian.sources` (champ `Components:`), sauvegarde dans `/var/backups/provision/debian.sources.bak-AAAAMMJJ`, backports dans un fichier `.sources` dédié.
 - [ ] Outil en échec volontaire (`apt:inexistant`) : code de sortie `2`, outil listé dans le rapport.
 - [ ] Fichier de configuration invalide : code `1`, aucune modification.
 - [ ] `ssh -t machine 'sudo bash provision.sh --config parc.conf </dev/null'` se termine sans rester bloqué.
