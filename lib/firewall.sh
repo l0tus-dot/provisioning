@@ -12,48 +12,86 @@
 # _fw_have <commande> : la commande est-elle disponible ? (redéfinissable dans les tests)
 _fw_have() { command -v "$1" >/dev/null 2>&1; }
 
-# _fw_ancestor_is_sshd : un ancêtre du processus courant est-il sshd / sshd-session ?
-# Parcourt ${PROC_ROOT:-/proc}/<pid>/stat (ppid), 64 niveaux au plus ; sans /proc : non détecté.
-_fw_ancestor_is_sshd() {
+# _fw_ancestors : « pid comm » du processus courant puis de ses ancêtres (64 niveaux au plus).
+# Lit ${PROC_ROOT:-/proc}/<pid>/stat (comm, ppid) ; sans /proc : liste vide.
+_fw_ancestors() {
   local root="${PROC_ROOT:-/proc}" pid=$$ n stat comm rest
   local -a r
   for ((n = 0; n < 64; n++)); do
-    [[ -r "$root/$pid/stat" ]] || return 1
-    stat="$(cat "$root/$pid/stat" 2>/dev/null)" || return 1
+    [[ -r "$root/$pid/stat" ]] || return 0
+    stat="$(cat "$root/$pid/stat" 2>/dev/null)" || return 0
     comm="${stat#*(}"
     comm="${comm%)*}"
-    [[ "$comm" == sshd || "$comm" == sshd-session ]] && return 0
+    printf '%s %s\n' "$pid" "$comm"
     rest="${stat##*) }"
     read -r -a r <<< "$rest"
     pid="${r[1]:-}"
-    [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)) || return 1
+    if [[ ! "$pid" =~ ^[0-9]+$ ]] || ((pid <= 1)); then return 0; fi
   done
+  return 0
+}
+
+# _fw_ancestor_is_sshd : un ancêtre du processus courant est-il sshd / sshd-session ?
+_fw_ancestor_is_sshd() {
+  local pid comm
+  while read -r pid comm; do
+    if [[ "$comm" == sshd || "$comm" == sshd-session ]]; then return 0; fi
+  done < <(_fw_ancestors)
   return 1
 }
 
+# _fw_ancestor_ssh_connection : SSH_CONNECTION lu dans l'environnement (NUL-séparé) du premier
+# ancêtre qui le porte (sudo/su retirent la variable du processus courant, pas de ses parents).
+_fw_ancestor_ssh_connection() {
+  local root="${PROC_ROOT:-/proc}" pid comm kv
+  while read -r pid comm; do
+    [[ -r "$root/$pid/environ" ]] || continue
+    while IFS= read -r -d '' kv || [[ -n "$kv" ]]; do
+      if [[ "$kv" == SSH_CONNECTION=?* ]]; then
+        printf '%s\n' "${kv#SSH_CONNECTION=}"
+        return 0
+      fi
+    done < "$root/$pid/environ"
+  done < <(_fw_ancestors)
+  return 1
+}
+
+# _fw_ssh_connection : valeur de SSH_CONNECTION (environnement courant, sinon ancêtres).
+_fw_ssh_connection() {
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    printf '%s\n' "$SSH_CONNECTION"
+    return 0
+  fi
+  _fw_ancestor_ssh_connection
+}
+
 # _fw_in_ssh_session : vrai si la session courante passe par SSH.
-# sudo (env_reset) retire SSH_CONNECTION : avec SUDO_USER, on cherche sshd parmi les ancêtres.
+# sudo (env_reset) et `su -` retirent SSH_CONNECTION : on cherche sshd parmi les ancêtres, ou
+# SSH_CONNECTION dans l'environnement d'un ancêtre.
 _fw_in_ssh_session() {
   [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" ]] && return 0
-  [[ -n "${SUDO_USER:-}" ]] && _fw_ancestor_is_sshd
+  _fw_ancestor_is_sshd && return 0
+  _fw_ancestor_ssh_connection >/dev/null
 }
 
 # _fw_conn_port : port local de la connexion SSH courante (4e champ de SSH_CONNECTION), si valide.
 _fw_conn_port() {
   local -a c
-  read -r -a c <<< "${SSH_CONNECTION:-}"
+  local conn=""
+  conn="$(_fw_ssh_connection || true)"
+  read -r -a c <<< "$conn"
   if is_port "${c[3]:-}"; then printf '%s\n' "$((10#${c[3]}))"; fi
   return 0
 }
 
-# _fw_sshd_t_port : premier « port N » de `sshd -T` (nécessite root et les clés d'hôte).
-_fw_sshd_t_port() {
+# _fw_sshd_t_ports : tous les « port N » de `sshd -T` (nécessite root et les clés d'hôte).
+_fw_sshd_t_ports() {
   local bin=""
   if _fw_have sshd; then bin=sshd
   elif [[ -x /usr/sbin/sshd ]]; then bin=/usr/sbin/sshd
   else return 1
   fi
-  LC_ALL=C "$bin" -T 2>/dev/null | awk 'tolower($1) == "port" { print $2; exit }'
+  LC_ALL=C "$bin" -T 2>/dev/null | awk 'tolower($1) == "port" { print $2 }'
 }
 
 # _fw_config_port <fichier> <profondeur> : premier `Port` du fichier, en suivant les `Include`.
@@ -91,14 +129,24 @@ _fw_config_port() {
   return 1
 }
 
-# sshd_port : port SSH effectif (sshd -T, sinon sshd_config, sinon 22). Toujours un port valide.
-sshd_port() {
-  local p=""
-  p="$(_fw_sshd_t_port 2>/dev/null || true)"
-  if is_port "$p"; then printf '%s\n' "$((10#$p))"; return 0; fi
+# sshd_ports : TOUS les ports SSH effectifs, un par ligne (sshd -T ; sinon premier Port de
+# sshd_config ; sinon 22). Toujours au moins un port valide.
+sshd_ports() {
+  local p found=0
+  while IFS= read -r p; do
+    if is_port "$p"; then printf '%s\n' "$((10#$p))"; found=1; fi
+  done < <(_fw_sshd_t_ports 2>/dev/null || true)
+  ((found)) && return 0
   p="$(_fw_config_port "$SSHD_CONFIG" 0 2>/dev/null || true)"
   if is_port "$p"; then printf '%s\n' "$((10#$p))"; return 0; fi
   printf '22\n'
+}
+
+# sshd_port : premier port SSH effectif (affichage). Toujours un port valide.
+sshd_port() {
+  local p
+  IFS= read -r p < <(sshd_ports)
+  printf '%s\n' "$p"
 }
 
 # _fw_ufw_active : `ufw status` annonce-t-il « Status: active » ?
@@ -210,7 +258,7 @@ _fw_find() {
 
 # _fw_ssh_ports : ports SSH à ne jamais couper (sshd, port configuré, connexion courante).
 _fw_ssh_ports() {
-  sshd_port
+  sshd_ports
   if [[ "${CFG_UFW_SSH_PORT:-}" =~ ^[0-9]+$ ]] && is_port "$CFG_UFW_SSH_PORT"; then
     printf '%s\n' "$((10#$CFG_UFW_SSH_PORT))"
   fi
@@ -230,9 +278,10 @@ _fw_covers() {
 ufw_plan() {
   local ssh="${1:-auto}" real r
   shift || true
-  local -a out=()
+  local -a out=() allp=()
   local -A seen=()
   real="$(sshd_port)"
+  mapfile -t allp < <(sshd_ports)
 
   if [[ "$ssh" != auto && "$ssh" != none ]] && ! is_port "$ssh"; then
     warn "Port SSH invalide « $ssh » : utilisation du port détecté ($real)" >&2
@@ -243,15 +292,15 @@ ufw_plan() {
     none)
       if _fw_in_ssh_session; then
         warn "Session SSH détectée : port SSH forcé ($real/tcp) malgré UFW_SSH_PORT=none" >&2
-        out+=("$real/tcp")
+        for r in "${allp[@]}"; do out+=("$r/tcp"); done
       fi
       ;;
-    auto) out+=("$real/tcp") ;;
+    auto) for r in "${allp[@]}"; do out+=("$r/tcp"); done ;;
     *)
       ssh=$((10#$ssh))
       if _fw_in_ssh_session && [[ "$ssh" != "$real" ]]; then
         warn "Session SSH sur le port $real, différent de UFW_SSH_PORT=$ssh : les deux sont autorisés" >&2
-        out+=("$real/tcp")
+        for r in "${allp[@]}"; do out+=("$r/tcp"); done
       fi
       out+=("$ssh/tcp")
       ;;
@@ -274,6 +323,17 @@ ufw_plan() {
       printf '%s\n' "$r"
     fi
   done
+}
+
+# _fw_record_added <règle> : consigne une règle ajoutée (ou qui serait ajoutée en dry-run).
+_fw_record_added() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    R_UFW_ADDED+=("$1 (dry-run)")
+    ok "Règle UFW serait ajoutée : $1"
+  else
+    R_UFW_ADDED+=("$1")
+    ok "Règle UFW ajoutée : $1"
+  fi
 }
 
 # ufw_apply [--no-enable] <règles…> : installe ufw si besoin, règles SSH, politique par défaut,
@@ -318,8 +378,7 @@ ufw_apply() {
     fi
     if run ufw allow "$r"; then
       if [[ -z "$kind" ]]; then
-        R_UFW_ADDED+=("$r")
-        ok "Règle UFW ajoutée : $r"
+        _fw_record_added "$r"
       else
         info "Règle UFW déjà présente : $r"
       fi
@@ -345,8 +404,7 @@ ufw_apply() {
       continue
     fi
     if run ufw allow "$r"; then
-      R_UFW_ADDED+=("$r")
-      ok "Règle UFW ajoutée : $r"
+      _fw_record_added "$r"
     else
       warn "Échec de l'ajout de la règle UFW : $r"
       HAS_PARTIAL_FAILURE=1

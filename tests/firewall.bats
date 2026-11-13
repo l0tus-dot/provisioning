@@ -234,6 +234,7 @@ _status() { UFW_STATUS_FILE="$REPO_ROOT/tests/fixtures/ufw-status-$1.txt"; expor
   DRY_RUN=1
   ufw_apply 22/tcp
   if grep -q -e '^allow' -e 'enable' -e '^default' "$CALLS"; then false; fi
+  [ "${R_UFW_ADDED[*]}" = "22/tcp (dry-run)" ]
 }
 
 @test "--no-enable skips the enable step and warns when inactive" {
@@ -436,9 +437,9 @@ _fake_proc() {
   if _fw_in_ssh_session; then false; fi
 }
 
-@test "no SUDO_USER: ancestors are not consulted" {
-  _fake_proc "$$:bash:500" "500:sshd:1"
-  if _fw_in_ssh_session; then false; fi
+@test "no SUDO_USER (su -): sshd ancestor is still detected" {
+  _fake_proc "$$:bash:500" "500:su:400" "400:sshd:1"
+  _fw_in_ssh_session
 }
 
 @test "no /proc: not detected" {
@@ -502,4 +503,66 @@ _fake_proc() {
   bats_run ufw_apply 80/tcp
   [ "$status" -eq 1 ]
   if grep -q -- '--force enable' "$CALLS"; then false; fi
+}
+
+# --- ports sshd multiples et SSH_CONNECTION hérité d'un ancêtre ---
+
+# _proc_environ <pid> <KEY=VAL…> : écrit <pid>/environ (séparateur NUL).
+_proc_environ() {
+  local pid="$1"
+  shift
+  printf '%s\0' "$@" > "$PROC_ROOT/$pid/environ"
+}
+
+@test "sshd_ports lists every port line, sshd_port keeps the first" {
+  stub sshd 'printf "port 2222\nport 22\nport 2200\naddressfamily any\n"'
+  [ "$(sshd_ports)" = $'2222\n22\n2200' ]
+  [ "$(sshd_port)" = 2222 ]
+}
+
+@test "ufw_plan auto allows every sshd port" {
+  stub sshd 'printf "port 2222\nport 22\n"'
+  ufw_plan auto > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = $'2222/tcp\n22/tcp' ]
+}
+
+@test "ufw_apply opens every sshd port before enabling" {
+  stub sshd 'printf "port 2222\nport 22\n"'
+  ufw_apply 2222/tcp 22/tcp
+  grep -q '^allow 2222/tcp' "$CALLS"
+  grep -q '^allow 22/tcp' "$CALLS"
+}
+
+@test "sudo stripped SSH_CONNECTION: port read from an ancestor environ" {
+  _fake_proc "$$:bash:500" "500:sudo:400" "400:bash:300" "300:notsshd:1"
+  _proc_environ 400 "HOME=/root" "SSH_CONNECTION=1.2.3.4 5 6.7.8.9 2022" "TERM=xterm"
+  [ "$(_fw_conn_port)" = 2022 ]
+  _fw_in_ssh_session
+}
+
+@test "ancestor environ: session detected without sshd in the chain and without SUDO_USER" {
+  _fake_proc "$$:bash:500" "500:tmux:1"
+  _proc_environ 500 "SSH_CONNECTION=1.2.3.4 5 6.7.8.9 22"
+  _fw_in_ssh_session
+}
+
+@test "own SSH_CONNECTION wins over ancestors" {
+  export SSH_CONNECTION="1.2.3.4 5 6.7.8.9 2200"
+  _fake_proc "$$:bash:500" "500:bash:1"
+  _proc_environ 500 "SSH_CONNECTION=1.2.3.4 5 6.7.8.9 2022"
+  [ "$(_fw_conn_port)" = 2200 ]
+}
+
+@test "no ancestor environ and no SSH_CONNECTION: no conn port, no session" {
+  _fake_proc "$$:bash:500" "500:bash:1"
+  [ -z "$(_fw_conn_port)" ]
+  if _fw_in_ssh_session; then false; fi
+}
+
+@test "ancestor environ port is opened by ufw_plan" {
+  _fake_proc "$$:bash:500" "500:sudo:400" "400:bash:1"
+  _proc_environ 400 "SSH_CONNECTION=1.2.3.4 5 6.7.8.9 2022"
+  stub sshd 'echo "port 22"'
+  ufw_plan auto > "$BATS_TEST_TMPDIR/plan" 2>/dev/null
+  [ "$(cat "$BATS_TEST_TMPDIR/plan")" = $'22/tcp\n2022/tcp' ]
 }
