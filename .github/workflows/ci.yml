@@ -30,7 +30,6 @@ jobs:
   smoke:
     name: smoke (${{ matrix.image }})
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -40,10 +39,7 @@ jobs:
           - debian:11
           - debian:12
           - debian:13
-        include:
-          # Peut ne pas encore être publiée sur Docker Hub.
-          - image: ubuntu:26.04
-            experimental: true
+          - ubuntu:26.04
     steps:
       - uses: actions/checkout@v4
       - name: Bundle

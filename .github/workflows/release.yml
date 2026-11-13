@@ -8,7 +8,30 @@ permissions:
   contents: write
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shopt -s nullglob
+          files=(provision.sh lib/*.sh scripts/*.sh)
+          [ -f tests/smoke.sh ] && files+=(tests/smoke.sh)
+          shellcheck -x "${files[@]}"
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Tests unitaires
+        run: tests/run.sh
+
   release:
+    needs: [lint, unit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
