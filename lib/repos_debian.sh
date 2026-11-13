@@ -5,6 +5,7 @@
 # APT_ROOT (défaut /) préfixe tous les chemins touchés (utile pour les tests).
 
 # apt_sources_file [racine] : fichier de sources principal (deb822 s'il existe, sinon classique).
+# shellcheck disable=SC2120  # l'argument est optionnel : la plupart des appels n'en passent pas
 apt_sources_file() {
   local root="${1:-${APT_ROOT:-/}}"
   root="${root%/}"
@@ -150,12 +151,16 @@ debian_add_components() {
     return 0
   fi
 
-  local backup
-  backup="$file.bak-$(date +%Y%m%d)"
+  # Sauvegarde hors de sources.list.d (apt avertit sur les fichiers inconnus de ce dossier).
+  local backup bdir="${APT_ROOT:-/}"
+  bdir="${bdir%/}/var/backups/provision"
+  backup="$bdir/$(basename -- "$file").bak-$(date +%Y%m%d)"
   if [[ "$DRY_RUN" == "1" ]]; then
     _repos_dry "ajouter les composants ${wanted[*]} à $file (sauvegarde : $backup)"
+    R_REPOS+=("composants ${wanted[*]} ($file) (dry-run)")
     return 0
   fi
+  mkdir -p "$bdir" || { error "Création du dossier de sauvegarde impossible : $bdir"; return 1; }
   [[ -e "$backup" ]] || cp -p "$file" "$backup" || { error "Sauvegarde impossible : $backup"; return 1; }
   local tmp
   tmp="$(mktemp "$file.XXXXXX")" || { error "Création du fichier temporaire impossible"; return 1; }
@@ -165,11 +170,12 @@ debian_add_components() {
   if ! chown --reference="$file" "$tmp" 2>/dev/null; then
     chown root:root "$tmp" 2>/dev/null || [[ "$(id -u)" -ne 0 ]] || { rm -f "$tmp"; error "chown impossible sur $tmp"; return 1; }
   fi
-  printf '%s' "$new" > "$tmp" && mv -f "$tmp" "$file" || {
+  if ! { printf '%s' "$new" > "$tmp" && mv -f "$tmp" "$file"; }; then
     rm -f "$tmp"
     error "Échec de l'écriture de $file"
     return 1
-  }
+  fi
+  R_REPOS+=("composants ${wanted[*]} ($file)")
   info "Composants ajoutés dans $file : ${wanted[*]}"
 }
 
@@ -207,10 +213,10 @@ Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
   if [[ "$DRY_RUN" == "1" ]]; then
     _repos_dry "créer $target (backports $codename : ${comps[*]})"
   else
-    mkdir -p "$dir" && printf '%s' "$content" > "$target" || {
+    if ! { mkdir -p "$dir" && printf '%s' "$content" > "$target"; }; then
       error "Impossible de créer $target"
       return 1
-    }
+    fi
     chmod 644 "$target"
     info "Dépôt backports créé : $target"
   fi
@@ -228,6 +234,8 @@ debian_install_snapd() {
     error "Impossible d'activer snapd.socket"
     return 1
   fi
+  # Sans cela, un `snap install` immédiat peut échouer (« too early for operation »).
+  run snap wait system seed.loaded || warn "snapd n'a pas fini son initialisation (snap wait a échoué)"
   R_REPOS+=("snapd")
 }
 

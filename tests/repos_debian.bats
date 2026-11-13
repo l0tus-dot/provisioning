@@ -12,6 +12,7 @@ setup() {
   R_WARNINGS=()
   OS_VERSION=12
   OS_CODENAME=bookworm
+  BK="$APT_ROOT/var/backups/provision"
 }
 
 @test "apt_sources_file prefers debian.sources then sources.list" {
@@ -73,7 +74,7 @@ setup() {
   cp "$FIX/trixie.sources" "$f"
   debian_add_components "$f" bookworm contrib
   cmp "$f" "$FIX/trixie.sources"
-  [ ! -e "$f.bak-$(date +%Y%m%d)" ]
+  [ ! -e "$BK/$(basename "$f").bak-$(date +%Y%m%d)" ]
 }
 
 @test "components idempotent: second call changes nothing and keeps a single backup" {
@@ -83,8 +84,10 @@ setup() {
   cp "$f" "$BATS_TEST_TMPDIR/first"
   debian_add_components "$f" bookworm contrib non-free non-free-firmware
   cmp "$f" "$BATS_TEST_TMPDIR/first"
-  cmp "$f.bak-$(date +%Y%m%d)" "$FIX/bookworm.list"
-  [ "$(ls "$APT_ROOT/etc/apt" | grep -c '^sources.list.bak-')" -eq 1 ]
+  cmp "$BK/sources.list.bak-$(date +%Y%m%d)" "$FIX/bookworm.list"
+  [ "$(ls "$BK" | grep -c '^sources.list.bak-')" -eq 1 ]
+  [ "$(ls "$APT_ROOT/etc/apt" | grep -c 'bak-')" -eq 0 ]
+  [ "${#R_REPOS[@]}" -eq 1 ]
 }
 
 @test "bullseye skips non-free-firmware with warning" {
@@ -93,7 +96,7 @@ setup() {
   cp "$FIX/bullseye.list" "$f"
   debian_add_components "$f" bullseye contrib non-free non-free-firmware
   grep -qx 'deb http://deb.debian.org/debian/ bullseye main contrib non-free' "$f"
-  ! grep -q 'non-free-firmware' "$f"
+  if grep -q 'non-free-firmware' "$f"; then false; fi
   [ "${#R_WARNINGS[@]}" -eq 1 ]
   [[ "${R_WARNINGS[0]}" == *non-free-firmware* ]]
 }
@@ -106,7 +109,7 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"[dry-run]"* ]]
   cmp "$f" "$FIX/bookworm.list"
-  [ ! -e "$f.bak-$(date +%Y%m%d)" ]
+  [ ! -e "$BK/$(basename "$f").bak-$(date +%Y%m%d)" ]
 }
 
 @test "backports file created once, classic when main file is classic" {
@@ -175,7 +178,7 @@ setup() {
   printf 'deb http://deb.debian.org/debian bookworm main contrib' > "$f"
   debian_add_components "$f" bookworm contrib
   [ "$(cat "$f")" = 'deb http://deb.debian.org/debian bookworm main contrib' ]
-  [ ! -e "$f.bak-$(date +%Y%m%d)" ]
+  [ ! -e "$BK/$(basename "$f").bak-$(date +%Y%m%d)" ]
 }
 
 @test "look-alike host notdebian.org is untouched" {
@@ -217,4 +220,40 @@ setup() {
   debian_add_components "$f" bookworm contrib
   grep -q 'bookworm main contrib' "$f"
   [ "$(stat -c %a "$f")" = "644" ]
+}
+
+@test "components: R_REPOS records the change, only when the file changed" {
+  local f="$APT_ROOT/etc/apt/sources.list"
+  cp "$FIX/bookworm.list" "$f"
+  debian_add_components "$f" bookworm contrib
+  [ "${#R_REPOS[@]}" -eq 1 ]
+  [[ "${R_REPOS[0]}" == "composants contrib ($f)" ]]
+  debian_add_components "$f" bookworm contrib
+  [ "${#R_REPOS[@]}" -eq 1 ]
+}
+
+@test "components: dry-run records a (dry-run) repo entry" {
+  DRY_RUN=1
+  local f="$APT_ROOT/etc/apt/sources.list"
+  cp "$FIX/bookworm.list" "$f"
+  bats_run debian_add_components "$f" bookworm contrib
+  [ "${#R_REPOS[@]}" -eq 1 ]
+  [[ "${R_REPOS[0]}" == *"(dry-run)" ]]
+}
+
+@test "snapd: waits for seeding after enabling the socket" {
+  stub_log apt-get
+  stub_log systemctl
+  stub_log snap
+  debian_install_snapd
+  grep -qx 'wait system seed.loaded' "$BATS_TEST_TMPDIR/snap.calls"
+}
+
+@test "snapd: snap wait failure is only a warning" {
+  stub_log apt-get
+  stub_log systemctl
+  stub snap 'exit 1'
+  debian_install_snapd
+  [ "${#R_WARNINGS[@]}" -eq 1 ]
+  [ "${#R_REPOS[@]}" -eq 1 ]
 }

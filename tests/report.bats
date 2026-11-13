@@ -116,3 +116,20 @@ setup() {
   offer_save_config
   [ -z "$(ls -A "$PROVISION_SAVE_DIR")" ]
 }
+
+@test "error() records into R_ERRORS and the report has an Erreurs section" {
+  error "apt-get full-upgrade a échoué" 2>/dev/null
+  [ "${#R_ERRORS[@]}" -eq 1 ]
+  bats_run report_print "$BATS_TEST_TMPDIR/rapport.txt"
+  [[ "$output" == *"Erreurs"* ]]
+  grep -q 'full-upgrade a échoué' "$BATS_TEST_TMPDIR/rapport.txt"
+  report_init
+  [ "${#R_ERRORS[@]}" -eq 0 ]
+}
+
+@test "reboot failure is only a warning" {
+  CFG_REBOOT=yes
+  stub reboot 'exit 1'
+  maybe_reboot
+  [ "${#R_WARNINGS[@]}" -eq 1 ]
+}

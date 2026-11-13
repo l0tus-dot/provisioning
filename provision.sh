@@ -115,6 +115,18 @@ _abort_with_report() {
   exit 1
 }
 
+# _on_exit : à la sortie sur erreur inattendue (rapport pas encore affiché) : rapport, code 1.
+_on_exit() {
+  local rc=$?
+  trap - EXIT
+  if ((rc != 0)) && [[ "${REPORT_PRINTED:-0}" != "1" ]]; then
+    error "Erreur inattendue (code $rc)"
+    report_print "$REPORT_FILE"
+    exit 1
+  fi
+  exit "$rc"
+}
+
 # _step_update : mise à jour du système.
 _step_update() {
   if [[ "$MODE" == "interactive" ]]; then
@@ -161,8 +173,10 @@ _step_debian_repos() {
   fi
   # Les dépôts ajoutés ne sont visibles qu'après un nouvel apt-get update.
   if ((${#R_REPOS[@]} > 0)); then
-    _apt "Actualisation des listes de paquets…" update \
-      || warn "apt-get update a échoué après modification des dépôts"
+    if ! _apt "Actualisation des listes de paquets…" update; then
+      error "apt-get update a échoué après modification des dépôts"
+      _abort_with_report
+    fi
   fi
 }
 
@@ -182,6 +196,7 @@ _step_tools() {
     specs=("${TOOLS_SELECTED[@]}")
     if ((${#specs[@]} > 0)); then
       confirm "Lancer l'installation ?" y || { warn "Installation annulée."; return 0; }
+      CFG_TOOLS="${specs[*]}"
     fi
   else
     read -r -a specs <<< "$CFG_TOOLS"
@@ -213,6 +228,8 @@ main() {
     config_defaults
   fi
 
+  # Filet de sécurité : une erreur inattendue (set -e) produit tout de même un rapport.
+  trap _on_exit EXIT
   connectivity_check || _abort_with_report
   _step_update
   if [[ "$(os_family)" == "debian" ]]; then _step_debian_repos; fi

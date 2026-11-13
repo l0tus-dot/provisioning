@@ -4,12 +4,23 @@
 # Nécessite lib/ui.sh (run, run_with_spinner, info, ok, warn, error).
 
 # _apt <message> <arguments apt-get…> : apt-get non interactif via run_with_spinner.
+# Pour install / full-upgrade, les fichiers de configuration modifiés sont conservés
+# (--force-confdef --force-confold) : jamais de question dpkg. En MODE=auto, stdin = /dev/null.
 _apt() {
   local msg="$1"
   shift
-  run_with_spinner "$msg" env DEBIAN_FRONTEND=noninteractive apt-get "$@"
+  local -a opts=()
+  case " $* " in
+    *" install "* | *" full-upgrade "*)
+      opts=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold) ;;
+    *) ;;
+  esac
+  if [[ "${MODE:-interactive}" == "auto" ]]; then
+    run_with_spinner "$msg" env DEBIAN_FRONTEND=noninteractive apt-get "${opts[@]}" "$@" < /dev/null
+  else
+    run_with_spinner "$msg" env DEBIAN_FRONTEND=noninteractive apt-get "${opts[@]}" "$@"
+  fi
 }
-
 # connectivity_check : réussit si `apt-get update` réussit.
 connectivity_check() {
   if ! _apt "Vérification des dépôts apt…" update; then
@@ -25,9 +36,7 @@ system_update() {
     error "Échec de apt-get update"
     return 1
   fi
-  if ! _apt "Mise à niveau des paquets…" -y \
-      -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-      full-upgrade; then
+  if ! _apt "Mise à niveau des paquets…" -y full-upgrade; then
     error "Échec de apt-get full-upgrade"
     return 1
   fi

@@ -13,7 +13,7 @@ _ui_declare_array() {
   fi
 }
 for _ui_arr in R_TOOLS_OK R_TOOLS_FAIL R_REPOS R_UFW_ADDED R_UFW_EXTRA \
-               R_SVC_MASKED R_SVC_DISABLED R_WARNINGS; do
+               R_SVC_MASKED R_SVC_DISABLED R_WARNINGS R_ERRORS; do
   _ui_declare_array "$_ui_arr"
 done
 unset _ui_arr
@@ -43,7 +43,7 @@ _ui_log() {
 info()  { _ui_print '1;34' '[INFO]' "$@"; }
 ok()    { _ui_print '1;32' '[ OK ]' "$@"; }
 warn()  { R_WARNINGS+=("$*"); _ui_print '1;33' '[WARN]' "$@"; }
-error() { _ui_print '1;31' '[ERR ]' "$@" >&2; }
+error() { R_ERRORS+=("$*"); _ui_print '1;31' '[ERR ]' "$@" >&2; }
 step()  { printf '\n' ; _ui_print '1;36' '==>' "$@"; }
 
 # --- Questions ---

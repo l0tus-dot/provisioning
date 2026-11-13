@@ -67,7 +67,7 @@ prov() { bash "$REPO_ROOT/provision.sh" --log "$LOGF" "$@"; }
   [[ "$output" == *"[dry-run]"* ]]
   [ ! -e "$BATS_TEST_TMPDIR/apt-get.calls" ]
   if [ -e "$BATS_TEST_TMPDIR/ufw.calls" ]; then
-    # lectures seules autoris�es (ufw status), jamais de modification
+    # lectures seules autorisées (ufw status), jamais de modification
     if grep -Eq 'allow|enable|default' "$BATS_TEST_TMPDIR/ufw.calls"; then false; fi
   fi
 }
@@ -113,6 +113,11 @@ CONF
   [ "$status" -eq 1 ]
   [[ "$output" == *"Rapport de provisionnement"* ]]
   [ ! -e "$BATS_TEST_TMPDIR/ufw.calls" ]
+  # le rapport enregistré dit pourquoi l'exécution a échoué
+  local rep
+  rep="$(ls "$BATS_TEST_TMPDIR"/logs/rapport-*.txt)"
+  grep -q 'Erreurs' "$rep"
+  grep -q 'full-upgrade' "$rep"
 }
 
 @test "connectivity failure exits 1" {
@@ -128,6 +133,61 @@ CONF
     --config "$REPO_ROOT/examples/parc.conf" </dev/null
   echo "$output"
   [ "$status" -eq 0 ]
+  # aucune question posée : ni invite de confirmation, ni marqueur [?]
+  case "$output" in *"[O/n]"* | *"[o/N]"* | *"[?]"*) false ;; esac
+  if grep -Eq '\[O/n\]|\[o/N\]|\[\?\]' "$LOGF"; then false; fi
+}
+
+@test "components alone trigger apt-get update after the edit, before tool install" {
+  printf 'UPDATE_SYSTEM="no"\nDEBIAN_COMPONENTS="contrib"\nTOOLS="apt:git"\nUFW_ENABLE="no"\n' > "$BATS_TEST_TMPDIR/c.conf"
+  run prov --config "$BATS_TEST_TMPDIR/c.conf"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  grep -q 'contrib' "$APT_ROOT/etc/apt/sources.list"
+  mapfile -t calls < "$BATS_TEST_TMPDIR/apt-get.calls"
+  [ "${calls[0]}" = "update" ]
+  [ "${calls[1]}" = "update" ]
+  [[ "${calls[2]}" == *"install -y -- git" ]]
+  [[ "$output" == *"composants contrib"* ]]
+  grep -q 'composants contrib' "$BATS_TEST_TMPDIR"/logs/rapport-*.txt
+}
+
+@test "apt-get update failing after repo changes is blocking (exit 1, in the report)" {
+  printf 'UPDATE_SYSTEM="no"\nDEBIAN_COMPONENTS="contrib"\nTOOLS="apt:git"\nUFW_ENABLE="no"\n' > "$BATS_TEST_TMPDIR/c.conf"
+  stub apt-get 'echo "$*" >> "'"$BATS_TEST_TMPDIR"'/apt-get.calls"; n=$(wc -l < "'"$BATS_TEST_TMPDIR"'/apt-get.calls"); [ "$n" -ge 2 ] && exit 100; exit 0'
+  run prov --config "$BATS_TEST_TMPDIR/c.conf"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Rapport de provisionnement"* ]]
+  grep -q 'après modification des dépôts' "$BATS_TEST_TMPDIR"/logs/rapport-*.txt
+  if grep -q 'install' "$BATS_TEST_TMPDIR/apt-get.calls"; then false; fi
+}
+
+@test "interactive tool selection is kept in CFG_TOOLS for the saved config" {
+  run bash -c '
+    source "$1/provision.sh"
+    MODE=interactive
+    config_defaults
+    tools_interactive() { TOOLS_SELECTED=(apt:git npm:typescript@5); }
+    confirm() { return 0; }
+    tool_install() { :; }
+    _step_tools >/dev/null
+    printf "%s\n" "$CFG_TOOLS"
+  ' _ "$REPO_ROOT"
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = "apt:git npm:typescript@5" ]
+}
+
+@test "unexpected error still prints a report and exits 1" {
+  printf 'UPDATE_SYSTEM="no"\nUFW_ENABLE="no"\n' > "$BATS_TEST_TMPDIR/e.conf"
+  run bash -c '
+    source "$1/provision.sh"
+    _step_tools() { ls /chemin/inexistant-provision-test 2>/dev/null; }
+    main --log "$2" --config "$3"
+  ' _ "$REPO_ROOT" "$LOGF" "$BATS_TEST_TMPDIR/e.conf"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Rapport de provisionnement"* ]]
+  [[ "$output" == *"Erreur inattendue"* ]]
+  [ "$(printf '%s\n' "$output" | grep -c 'Rapport de provisionnement')" -eq 1 ]
 }
 
 @test "example configs pass config_load" {

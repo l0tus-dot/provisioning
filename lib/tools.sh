@@ -19,7 +19,8 @@ tool_parse() {
   if [[ "$rest" == *@* ]]; then T_VER="${rest#*@}"; else T_VER=""; fi
 }
 
-# tool_alias <nom> : nom du paquet apt pour un nom courant.
+# tool_alias <nom> : nom du paquet apt pour un nom courant (saisie interactive uniquement :
+# un fichier de configuration nomme toujours le paquet exact).
 tool_alias() {
   case "$1" in
     node) echo nodejs ;;
@@ -122,7 +123,6 @@ tool_install() {
   fi
   tool_parse "$spec"
   mgr="$T_MGR"; name="$T_NAME"; ver="$T_VER"
-  [[ "$mgr" == apt ]] && name="$(tool_alias "$name")"
 
   if [[ "$mgr" == flatpak && ! "$name" =~ ^[^.]+(\.[^.]+){2,}$ ]]; then
     _tool_record_fail "$spec" "$spec : flatpak exige l'identifiant complet de l'application (ex. org.gimp.GIMP)"

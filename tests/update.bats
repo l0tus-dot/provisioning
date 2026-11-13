@@ -75,3 +75,17 @@ setup() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"Impossible de joindre les dépôts apt"* ]]
 }
+
+@test "_apt install keeps existing config files (confdef + confold)" {
+  stub_log apt-get
+  _apt "x" install -y -- git
+  grep -q -- '--force-confdef' "$CALLS"
+  grep -q -- '--force-confold' "$CALLS"
+  grep -q -- 'install -y -- git' "$CALLS"
+}
+
+@test "_apt in auto mode gives apt-get no stdin" {
+  stub apt-get 'if [ -t 0 ]; then echo tty > "'"$BATS_TEST_TMPDIR"'/stdin"; else cat >> "'"$BATS_TEST_TMPDIR"'/stdin"; fi; exit 0'
+  echo "données" | _apt "x" install -y git
+  [ ! -s "$BATS_TEST_TMPDIR/stdin" ]
+}

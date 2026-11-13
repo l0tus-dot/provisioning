@@ -64,7 +64,7 @@ _answers_from() {
 @test "apt version with epoch is installed as full string" {
   stub apt-cache 'if [ "$1" = policy ]; then cat "'"$REPO_ROOT"'/tests/fixtures/apt-cache-policy-nodejs.txt"; else echo "Package: nodejs"; fi'
   stub_log apt-get
-  tool_install apt:node@18.19.0
+  tool_install apt:nodejs@18.19.0
   grep -qx 'install -y -- nodejs=2:18.19.0+dfsg-1' "$BATS_TEST_TMPDIR/apt-get.calls"
 }
 
@@ -270,4 +270,11 @@ if [ "$LC_ALL" = C ]; then cat "$F"; else sed "s/Version table/Table de versions
   stub flatpak 'echo "$*" >> "'"$BATS_TEST_TMPDIR"'/flatpak.calls"; [ "$1" = info ] && exit 1; exit 0'
   tool_install flatpak:org.gimp.GIMP
   grep -qx 'install -y --noninteractive flathub org.gimp.GIMP' "$BATS_TEST_TMPDIR/flatpak.calls"
+}
+
+@test "tool_install does not apply aliases to config specs" {
+  stub apt-cache 'for a; do :; done; echo "Package: $a"'
+  stub_log apt-get
+  tool_install apt:node
+  grep -qx 'install -y -- node' "$BATS_TEST_TMPDIR/apt-get.calls"
 }

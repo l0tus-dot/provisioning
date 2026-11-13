@@ -5,6 +5,7 @@
 
 : "${REBOOT_FLAG_FILE:=/var/run/reboot-required}"
 : "${START_TIME:=0}"
+: "${REPORT_PRINTED:=0}"   # 1 une fois le rapport affiché (filet de sécurité de provision.sh)
 
 # report_init : remet à zéro les globales partagées du rapport.
 report_init() {
@@ -16,7 +17,9 @@ report_init() {
   R_SVC_MASKED=()
   R_SVC_DISABLED=()
   R_WARNINGS=()
+  R_ERRORS=()
   HAS_PARTIAL_FAILURE=0
+  REPORT_PRINTED=0
   START_TIME="$(date +%s)"
 }
 
@@ -55,6 +58,7 @@ _report_text() {
   _report_section "Règles UFW présentes hors configuration (à vérifier manuellement)" "${R_UFW_EXTRA[@]}"
   _report_section "Services masqués" "${R_SVC_MASKED[@]}"
   _report_section "Services désactivés" "${R_SVC_DISABLED[@]}"
+  _report_section "Erreurs" "${R_ERRORS[@]}"
   _report_section "Avertissements" "${R_WARNINGS[@]}"
   printf '\n'
   if _report_reboot_needed; then
@@ -67,6 +71,7 @@ _report_text() {
 # report_print <fichier_rapport> : affiche le rapport et l'écrit sans couleurs.
 report_print() {
   local file="${1:-}" text plain
+  REPORT_PRINTED=1
   text="$(_report_text)"
   plain="$(printf '%s\n' "$text" | sed 's/\x1b\[[0-9;]*m//g')"
   if _ui_is_tty; then
@@ -114,7 +119,7 @@ maybe_reboot() {
     return 0
   fi
   info "Redémarrage en cours…"
-  run reboot
+  run reboot || warn "Le redémarrage a échoué : redémarrez la machine manuellement."
 }
 
 # offer_save_config : propose d'enregistrer les réponses (interactif seulement).

@@ -9,6 +9,7 @@ OS_PRETTY=""
 OS_DERIVED=0   # 1 si OS_ID provient de ID_LIKE (dérivé : Mint, Raspbian…)
 
 # os_detect [fichier] : renseigne OS_ID, OS_VERSION, OS_CODENAME, OS_PRETTY.
+# shellcheck disable=SC2120  # l'argument est optionnel : la plupart des appels n'en passent pas
 os_detect() {
   local file="${1:-${OS_RELEASE_FILE:-/etc/os-release}}"
   local line key val id="" id_like="" version="" codename="" ubuntu_codename="" pretty=""
