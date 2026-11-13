@@ -64,12 +64,13 @@ os_detect() {
   OS_PRETTY="$pretty"
 }
 
-# os_supported : 0 si Ubuntu 22.04/24.04/26.04 ou Debian 11/12/13 (hors dérivés).
+# os_supported : 0 si Ubuntu 22.04/24.04/26.04 ou Debian 12/13 (hors dérivés).
+# Debian 11 (Bullseye) est en fin de vie depuis le 31/08/2026 : non supportée.
 os_supported() {
   [[ "$OS_DERIVED" -eq 0 ]] || return 1
   case "$OS_ID:$OS_VERSION" in
     ubuntu:22.04 | ubuntu:24.04 | ubuntu:26.04) return 0 ;;
-    debian:11 | debian:12 | debian:13) return 0 ;;
+    debian:12 | debian:13) return 0 ;;
     *) return 1 ;;
   esac
 }

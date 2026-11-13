@@ -36,7 +36,7 @@ jobs:
         image:
           - ubuntu:22.04
           - ubuntu:24.04
-          # debian:11 retiré : Bullseye est en fin de vie (LTS terminé le 31/08/2026),
+          # debian:11 non supportée : Bullseye est en fin de vie (LTS terminé le 31/08/2026),
           # son dépôt de sécurité renvoie des 404 sur deb.debian.org, ce qui casse
           # l'installation de ca-certificates dans le conteneur, avant même le script.
           - debian:12

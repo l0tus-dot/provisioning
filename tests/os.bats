@@ -9,7 +9,7 @@ setup() {
 @test "supported distributions are detected" {
   local f id codename
   for spec in ubuntu-22.04:ubuntu:jammy ubuntu-24.04:ubuntu:noble ubuntu-26.04:ubuntu:resolute \
-              debian-11:debian:bullseye debian-12:debian:bookworm debian-13:debian:trixie; do
+              debian-12:debian:bookworm debian-13:debian:trixie; do
     IFS=: read -r f id codename <<< "$spec"
     os_detect "$FIX/$f"
     [ "$OS_ID" = "$id" ]
@@ -65,5 +65,13 @@ setup() {
 
 @test "missing file fails" {
   run_status=0; os_detect "$BATS_TEST_TMPDIR/absent" 2>/dev/null || run_status=$?
+  [ "$run_status" -eq 1 ]
+}
+
+@test "debian 11 (end of life) is not supported" {
+  os_detect "$FIX/debian-11"
+  [ "$OS_ID" = "debian" ]
+  [ "$OS_CODENAME" = "bullseye" ]
+  run_status=0; os_supported || run_status=$?
   [ "$run_status" -eq 1 ]
 }

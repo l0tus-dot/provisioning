@@ -35,7 +35,7 @@ Aujourd'hui, deux scripts quasi identiques (`ubuntu-setup.sh`, `debian-setup.sh`
 ## 3. Contraintes
 
 - 100 % Bash (≥ 5, présent sur toutes les versions ciblées), dépendances limitées à ce qui est installé de base.
-- Versions supportées : Ubuntu 22.04 / 24.04 / 26.04, Debian 11 / 12 / 13. Toute autre distribution : refus en mode automatique, avertissement + confirmation en mode interactif.
+- Versions supportées : Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 (Debian 11 retirée le 2026-11-13 : fin de vie, dépôts de sécurité cassés). Toute autre distribution : refus en mode automatique, avertissement + confirmation en mode interactif.
 - Exécution en root.
 - Messages utilisateur en français (comme aujourd'hui).
 - Distribution aux machines par `scp` : il doit exister une variante **fichier unique**.
@@ -175,7 +175,7 @@ Mêmes étapes et mêmes questions qu'aujourd'hui, avec ces changements :
 
 - **shellcheck** sur tous les fichiers (bloquant en CI).
 - **bats** pour les fonctions pures : analyse de config (clés inconnues, valeurs invalides), parsing `gestionnaire:nom@version`, validation des ports, modification des sources Debian sur des fichiers d'exemple (classique et deb822).
-- **Fumée Docker** (CI) : `ubuntu:22.04/24.04/26.04`, `debian:11/12/13` ; lancement de `--config examples/parc.conf --dry-run`, puis un vrai lancement limité à `UPDATE_SYSTEM` + `TOOLS=apt:curl` (systemd et UFW ne tournent pas dans Docker : ces étapes sont détectées et sautées avec avertissement).
+- **Fumée Docker** (CI) : `ubuntu:22.04/24.04/26.04`, `debian:12/13` ; lancement de `--config examples/parc.conf --dry-run`, puis un vrai lancement limité à `UPDATE_SYSTEM` + `TOOLS=apt:curl` (systemd et UFW ne tournent pas dans Docker : ces étapes sont détectées et sautées avec avertissement).
 - **Validation manuelle** sur VM avant fusion (UFW en SSH, services) : liste de contrôle dans le README.
 
 ### 5.10 Distribution

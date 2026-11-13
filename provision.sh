@@ -102,7 +102,7 @@ _check_os() {
   fi
   if os_supported; then return 0; fi
   if [[ "$MODE" == "auto" ]]; then
-    error "Système non supporté : ${OS_PRETTY:-inconnu} (Ubuntu 22.04/24.04/26.04, Debian 11/12/13)."
+    error "Système non supporté : ${OS_PRETTY:-inconnu} (Ubuntu 22.04/24.04/26.04, Debian 12/13)."
     exit 1
   fi
   warn "Système non supporté officiellement : ${OS_PRETTY:-inconnu}."

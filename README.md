@@ -2,7 +2,7 @@
 
 `provision.sh` prépare une machine **Ubuntu** ou **Debian** fraîchement installée : mise à jour, dépôts, outils, pare-feu UFW, services inutiles. Il remplace `ubuntu-setup.sh` et `debian-setup.sh`.
 
-- Ubuntu 22.04 / 24.04 / 26.04, Debian 11 / 12 / 13 (Bash 5 ou plus, exécution en root).
+- Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 (Bash 5 ou plus, exécution en root).
 - Deux modes : **interactif** (questions au fil de l'eau) et **automatique** (`--config`, aucune question, résultat identique sur toutes les machines).
 - Relançable sans danger : rien n'est dupliqué, aucune règle UFW n'est supprimée.
 
