@@ -1,0 +1,6 @@
+# Les bibliothèques posent des variables globales consommées dans d'autres fichiers.
+external-sources=true
+# SC2034 : variables globales consommées dans d'autres fichiers.
+# SC2317/SC2329 : les fonctions des bibliothèques sont appelées depuis d'autres fichiers
+# (provision.sh, tests) ou via trap/redéfinition : shellcheck les croit inutilisées.
+disable=SC2034,SC2317,SC2329
